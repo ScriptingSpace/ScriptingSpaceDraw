@@ -1,25 +1,16 @@
 import React from 'react';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { describe, it, expect, afterEach } from 'vitest';
 import { DrawDashboard } from './DrawDashboard';
-import { createInitialTransform, screenToCanvas } from '../functions/canvasTransform';
-
-// jsdom reports clientX/Y relative to the viewport; the canvas surface sits
-// below the header. Stub getBoundingClientRect on the surface so the
-// pointer math is deterministic: the surface occupies the full 800×600
-// viewport starting at (0, 0) — i.e. header/footer collapse to zero height
-// in the stub, which keeps the mapping screen = client exactly.
-beforeEach(() => {
-    const surface = () => document.querySelector('[data-testid="canvas-surface"]');
-    // Patch AFTER mount — the element must exist. Rendered per test below.
-});
+import { screenToCanvas, GRID_SCREEN_SPACING } from '../functions/canvasTransform';
 
 afterEach(() => {
     cleanup();
 });
 
 // Installs a deterministic getBoundingClientRect on the canvas surface
-// element (must be called after render)
+// element (must be called after render). The canvas fills the whole
+// viewport (no header/footer) → the surface IS the 800×600 viewport.
 const stubSurfaceRect = () => {
     const surface = screen.getByTestId('canvas-surface');
     surface.getBoundingClientRect = () =>
@@ -40,54 +31,149 @@ const stubSurfaceRect = () => {
 // Reads the HUD scale text ("×1.200e+0")
 const readHudScale = (): string => screen.getByTestId('hud-scale').textContent ?? '';
 
-// Converts a screen point to canvas coordinates using the CURRENT transform
-// state — read back through the origin cross position? No: simpler and
-// fully deterministic — the origin cross renders at canvasToScreen(0,0).
-// Instead of reverse-engineering, tests assert on observable DOM: the HUD
-// scale + the origin cross screen position (SVG attributes).
+// Reads the world origin's screen position off the horizontal origin cross
+// (x1 = origin.x − 8 → origin.x = x1 + 8; y = y1)
 const readOriginCross = (): { x: number; y: number } => {
     const cross = screen.getByTestId('origin-cross-h');
-    // x1 = origin.x − 8 → origin.x = x1 + 8
     const x1 = Number(cross.getAttribute('x1'));
     const y1 = Number(cross.getAttribute('y1'));
     return { x: x1 + 8, y: y1 };
 };
 
+// Reads the x positions of all vertical GRID lines in the layer (excluding
+// the origin-cross lines, which are identified by strokeWidth=2)
+const readVerticalLineXs = (): number[] => {
+    const layer = screen.getByTestId('grid-layer');
+    return Array.from(layer.querySelectorAll('line'))
+        .filter(
+            (line) =>
+                line.getAttribute('x1') === line.getAttribute('x2') &&
+                line.getAttribute('stroke-width') !== '2',
+        )
+        .map((line) => Number(line.getAttribute('x1')));
+};
+
+// Reads the y positions of all horizontal GRID lines (excluding the
+// origin-cross lines, which are identified by strokeWidth=2)
+const readHorizontalLineYs = (): number[] => {
+    const layer = screen.getByTestId('grid-layer');
+    return Array.from(layer.querySelectorAll('line'))
+        .filter(
+            (line) =>
+                line.getAttribute('y1') === line.getAttribute('y2') &&
+                line.getAttribute('stroke-width') !== '2',
+        )
+        .map((line) => Number(line.getAttribute('y1')));
+};
+
+// Gaps between consecutive sorted line positions — asserts the grid's
+// on-screen spacing (the "one size" contract)
+const readGaps = (positions: number[]): number[] => {
+    const sorted = [...positions].sort((a, b) => a - b);
+    return sorted.slice(1).map((value, index) => value - sorted[index]);
+};
+
 describe('DrawDashboard — shell', () => {
-    it('renders header, canvas surface, HUD and footer', () => {
+    it('renders the floating title, canvas surface and HUD — NO header/footer bars', () => {
         render(<DrawDashboard />);
         stubSurfaceRect();
 
-        expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Draw Dashboard');
+        // Floating title top-left with the version from __APP_VERSION__
+        expect(screen.getByTestId('floating-title').textContent).toBe(
+            'Draw Dashboard v1.0.0',
+        );
         expect(screen.getByTestId('canvas-surface')).toBeDefined();
         expect(screen.getByTestId('grid-svg')).toBeDefined();
         expect(screen.getByTestId('zoom-hud')).toBeDefined();
         expect(screen.getByTestId('hud-scale').textContent).toBe('×1.000e+0');
-        expect(screen.getByTestId('footer-version').textContent).toBe('Draw Dashboard v1.0.0');
-        expect(screen.getByTestId('footer-cursor-info').textContent).toBe('ready');
-    });
-
-    it('renders the visible grid levels at the initial scale', () => {
-        render(<DrawDashboard />);
-        stubSurfaceRect();
-
-        // Scale 1 → levels [0, 1, 2] selected; level 2's screen spacing
-        // (4096px) is multiple bands past MAX(128) → opacity 0 → NOT
-        // rendered. Visible set: level 0 (64px, full) + level 1 (512px,
-        // fading at 4/7 opacity).
-        expect(screen.getByTestId('grid-level-0')).toBeDefined();
-        expect(screen.getByTestId('grid-level-1')).toBeDefined();
-        expect(screen.queryByTestId('grid-level-2')).toBeNull();
+        // No header/footer testids exist anymore
+        expect(screen.queryByTestId('dashboard-header')).toBeNull();
+        expect(screen.queryByTestId('dashboard-footer')).toBeNull();
+        expect(screen.queryByTestId('footer-version')).toBeNull();
     });
 
     it('starts with the world origin at the viewport center', () => {
         render(<DrawDashboard />);
-        const surface = stubSurfaceRect();
+        stubSurfaceRect();
 
-        // Wait one tick for the measure effect (initial state already
-        // centers at 800×600 — the default matches the stubbed rect)
         const origin = readOriginCross();
         expect(origin).toEqual({ x: 400, y: 300 });
+    });
+});
+
+describe('DrawDashboard — the grid is ONE size (never resizes)', () => {
+    it('renders vertical + horizontal lines at the constant 64px spacing', () => {
+        render(<DrawDashboard />);
+        stubSurfaceRect();
+
+        // Every gap between consecutive vertical/horizontal lines is exactly
+        // GRID_SCREEN_SPACING (64px) — the one grid size
+        const vGaps = readGaps(readVerticalLineXs());
+        const hGaps = readGaps(readHorizontalLineYs());
+        expect(vGaps.every((gap) => gap === GRID_SCREEN_SPACING)).toBe(true);
+        expect(hGaps.every((gap) => gap === GRID_SCREEN_SPACING)).toBe(true);
+        // Line counts: gridLineCount(800)+1 = 15 vertical, gridLineCount(600)+1 = 12
+        // horizontal (+1 slack each for the boundary line beyond the edge)
+        expect(readVerticalLineXs().length).toBe(15);
+        expect(readHorizontalLineYs().length).toBe(12);
+    });
+
+    it('keeps the SAME 64px spacing after zooming in and out (no re-leveling)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Zoom in 10 notches, then out 25 notches — the gaps must STILL be
+        // exactly 64px. The grid never changes size; only its offset slides.
+        for (let index = 0; index < 10; index++) {
+            fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: 100 });
+        }
+        for (let index = 0; index < 25; index++) {
+            fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: -100 });
+        }
+        const vGaps = readGaps(readVerticalLineXs());
+        const hGaps = readGaps(readHorizontalLineYs());
+        expect(vGaps.every((gap) => gap === GRID_SCREEN_SPACING)).toBe(true);
+        expect(hGaps.every((gap) => gap === GRID_SCREEN_SPACING)).toBe(true);
+        // Same bounded line counts — no extra lines appear at any zoom
+        expect(readVerticalLineXs().length).toBe(15);
+        expect(readHorizontalLineYs().length).toBe(12);
+    });
+
+    it('slides (not resizes) while panning: the origin follows the hand', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Pan 100px right, 50px down → origin moves +100/+50 on screen
+        fireEvent.keyDown(window, { code: 'Space' });
+        fireEvent.pointerDown(surface, { clientX: 300, clientY: 200, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 250 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.keyUp(window, { code: 'Space' });
+
+        expect(readOriginCross()).toEqual({ x: 500, y: 350 });
+        // Spacing unchanged
+        const vGaps = readGaps(readVerticalLineXs());
+        expect(vGaps.every((gap) => gap === GRID_SCREEN_SPACING)).toBe(true);
+    });
+
+    it('anchors the origin exactly on a grid intersection at every zoom', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // After ANY zoom, the origin's screen position must be an exact
+        // multiple of GRID_SCREEN_SPACING away from every line origin —
+        // i.e. origin.x mod 64 must equal the first line's offset. Since
+        // lines are placed at multiples of 64 minus the origin's own
+        // offset, the origin ALWAYS lands on an intersection: the line
+        // set must contain a line exactly at origin.x and origin.y.
+        for (let index = 0; index < 7; index++) {
+            fireEvent.wheel(surface, { clientX: 250, clientY: 180, deltaY: 100 });
+        }
+        const origin = readOriginCross();
+        const xs = readVerticalLineXs();
+        const ys = readHorizontalLineYs();
+        expect(xs).toContain(origin.x);
+        expect(ys).toContain(origin.y);
     });
 });
 
@@ -98,7 +184,7 @@ describe('DrawDashboard — wheel zoom', () => {
 
         // Wheel at the viewport center (400, 300) — scale 1 → 1.2, origin
         // stays pinned under the cursor (center anchor = no pan shift; the
-        // 4e-14 residue is one ULP of double-math drift)
+        // residue is one ULP of double-math drift)
         fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: 100 });
         expect(readHudScale()).toBe('×1.200e+0');
         const origin = readOriginCross();
@@ -164,31 +250,6 @@ describe('DrawDashboard — wheel zoom', () => {
         }
         expect(readHudScale()).toBe('×2.126e-32');
     });
-
-    it('regenerates grid levels as the scale crosses level boundaries', () => {
-        render(<DrawDashboard />);
-        const surface = stubSurfaceRect();
-
-        // At scale 1 → levels [0, 1, 2]. Zoom OUT 2 notches (÷1.44) →
-        // scale ≈ 0.694: level 0 screen spacing = 64 × 0.694 ≈ 44.4 ≥ 12 →
-        // still level 0. Zoom out more — 8 notches total: scale ≈ 0.168,
-        // level 0 → 10.7px < 12 → finest visible level becomes 1.
-        for (let index = 0; index < 8; index++) {
-            fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: -100 });
-        }
-        // 1.2^8 = 4.2998… → scale ≈ 0.2326; level 0 → 14.9px ≥ 12 → still 0.
-        // 16 notches: 1.2^16 ≈ 18.49 → scale ≈ 0.0541; level 0 → 3.46px < 12,
-        // level 1 → 27.7px ≥ 12 → levels [1, 2, 3]; level 3's screen spacing
-        // = 1772px → past the band → opacity 0 → only 1 and 2 render
-        for (let index = 0; index < 8; index++) {
-            fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: -100 });
-        }
-        expect(screen.queryByTestId('grid-level-0')).toBeNull();
-        expect(screen.getByTestId('grid-level-1')).toBeDefined();
-        expect(screen.getByTestId('grid-level-2')).toBeDefined();
-        expect(screen.queryByTestId('grid-level-3')).toBeNull();
-        expect(screen.queryByTestId('grid-level-4')).toBeNull();
-    });
 });
 
 describe('DrawDashboard — panning', () => {
@@ -198,23 +259,18 @@ describe('DrawDashboard — panning', () => {
 
         // Arm space mode
         fireEvent.keyDown(window, { code: 'Space' });
-        expect(screen.getByTestId('footer-cursor-info').textContent).toBe(
-            'space held — drag to pan',
-        );
 
         // Drag 100px right, 50px down from (300, 200)
         fireEvent.pointerDown(surface, { clientX: 300, clientY: 200, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 250 });
         fireEvent.pointerUp(surface, {});
 
-        // Paper follows the hand → pan shifts by −100/−50 → origin moves
-        // +100/+50 on screen: (400,300) → (500, 350)
+        // Paper follows the hand → origin moves +100/+50: (400,300) → (500, 350)
         expect(readOriginCross()).toEqual({ x: 500, y: 350 });
         // Scale unchanged
         expect(readHudScale()).toBe('×1.000e+0');
 
         fireEvent.keyUp(window, { code: 'Space' });
-        expect(screen.getByTestId('footer-cursor-info').textContent).toBe('ready');
     });
 
     it('pans with middle-button drag without space held', () => {
@@ -238,7 +294,6 @@ describe('DrawDashboard — panning', () => {
         fireEvent.pointerUp(surface, {});
 
         expect(readOriginCross()).toEqual({ x: 400, y: 300 });
-        expect(screen.getByTestId('footer-cursor-info').textContent).toBe('ready');
     });
 
     it('stops panning when the pointer leaves the surface', () => {
@@ -294,11 +349,11 @@ describe('DrawDashboard — grid line culling', () => {
         fireEvent.pointerUp(surface, {});
         fireEvent.keyUp(window, { code: 'Space' });
 
-        // Line count per level = ceil(width/spacing)+1 + ceil(height/spacing)+1.
-        // Level 0 at scale 1 → 64px → (ceil(800/64)+1) + (ceil(600/64)+1)
-        // = 14 + 11 = 25 lines.
-        const level = screen.getByTestId('grid-level-0');
-        expect(level.children.length).toBe(25);
+        // Line count: (gridLineCount(800)+1) vertical + (gridLineCount(600)+1)
+        // horizontal = 15 + 12 = 27 lines, PLUS the 2 origin-cross lines
+        // (hidden but still mounted) = 29 total in the layer
+        const layer = screen.getByTestId('grid-layer');
+        expect(layer.children.length).toBe(29);
         // The origin cross is long gone off-screen → hidden (transparent)
         const cross = screen.getByTestId('origin-cross-h');
         expect(cross.getAttribute('stroke')).toBe('transparent');

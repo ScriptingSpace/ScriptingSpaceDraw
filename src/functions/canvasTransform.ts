@@ -10,71 +10,50 @@
 //   screen = (canvas - pan) * scale
 //   canvas = screen / scale + pan
 //
-// ZOOM-AT-POINTER (the "infinite magnification" contract): when the wheel
-// fires at screen point P, the canvas point UNDER THE CURSOR must stay under
-// the cursor after the zoom. Solving canvas(P)₁ = canvas(P)₂ for the new pan:
+// ZOOM-AT-POINTER: when the wheel fires at screen point P, the canvas point
+// UNDER THE CURSOR must stay under the cursor after the zoom. Solving
+// canvas(P)₁ = canvas(P)₂ for the new pan:
 //   pan₂ = P / scale + pan₁ − P / scale₂
 // (P measured in viewport-relative pixels — getBoundingClientRect offset.)
 //
-// UNBOUNDED SCALE (the "infinite zoom" contract): scale is clamped ONLY by
-// floating-point limits, never by a hard max/min. Wheel steps multiply the
-// scale by a constant factor, so the reachable set is { s₀ · fᵏ : k ∈ ℤ } —
-// unbounded in BOTH directions in exact math. IEEE-754 doubles saturate at
-// ±1.7976931348623157e308; to keep the UI responsive (and the exponent
-// display finite) near that wall, the clamp thresholds sit at the practical
-// edge: SCALE_MAX = 1e300, SCALE_MIN = 1e-300 — ~600 orders of magnitude of
-// travel. Reaching them in practice is impossible via wheel steps (each step
-// is ×1.2 → ~3,300 wheel notches of pure zoom-in from scale 1).
+// UNBOUNDED SCALE: wheel steps multiply the scale by a constant factor, so
+// zoom is unbounded in both directions. IEEE-754 doubles saturate at
+// ±1.7976931348623157e308; the clamp thresholds sit at the practical edge
+// (SCALE_MAX = 1e300, SCALE_MIN = 1e-300) purely to keep arithmetic + the
+// exponent display finite — no user reaches them.
 //
-// GRID LEVELS (the "infinite magnification" rendering contract): the grid is
-// a geometric ladder of spacings — each level is 8× the previous, rooted at
-// BASE_SPACING = 64 (canvas units). Levels exist for EVERY scale exponent:
-// levelForScale returns a valid level for any scale > 0, however extreme,
-// because it is computed from log₂ of the screen-space spacing, not from a
-// bounded list. Rendering picks the two levels whose screen spacing straddles
-// the "comfortable" band and interpolates their opacity — at ANY zoom the
-// screen always shows a fine grid, a coarse grid, and a smooth cross-fade
-// between them. Cross-reference: src/functions/grid.ts consumes these helpers.
+// GRID — ONE SIZE, ALWAYS (user contract: "the grid should be one size, and
+// I can scroll freely without the grid repeating in size"): the grid is
+// drawn at a CONSTANT screen spacing (GRID_SCREEN_SPACING = 64px) regardless
+// of zoom. There is NO level ladder, NO cross-fade, NO re-leveling: the grid
+// never changes size, it only slides (its offset follows the world origin's
+// screen position, so panning moves the grid and zooming keeps it one size).
+// The world anchoring means the origin always sits on a grid intersection.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // The transform itself — see the module header for the coordinate contract
 export type CanvasTransform = { x: number; y: number; scale: number };
 
-// BASE_SPACING — the canvas-unit spacing of grid level 0. All higher levels
-// are exact powers-of-8 multiples of this, so world coordinates at any zoom
-// always land on grid lines that are integer multiples of some level.
-export const BASE_SPACING = 64;
-
-// GRID_LEVEL_RATIO — how many times bigger each grid level is than the one
-// below it. 8 = 2³ keeps every level an integer power-of-two multiple of the
-// base, which preserves exactness in binary floating point (no rounding
-// drift as levels climb).
-export const GRID_LEVEL_RATIO = 8;
+// GRID_SCREEN_SPACING — the ONE grid size: constant screen pixels between
+// grid lines at every zoom level. The grid is a fixed-size screen texture
+// anchored to the world origin (see GridLayer.tsx).
+export const GRID_SCREEN_SPACING = 64;
 
 // Practical float-edge scale clamps — see the module header. NOT product
 // limits: they sit ~57 orders of magnitude inside the IEEE-754 double wall
 // (±1.7976931348623157e308) purely to keep arithmetic + exponent display
-// finite.
+// finite. No user scrolls anywhere near these.
 export const SCALE_MAX = 1e300;
 export const SCALE_MIN = 1e-300;
 
 // WHEEL_ZOOM_FACTOR — multiplicative zoom per wheel notch. Chosen so one
-// notch ≈ the classic "smooth" feel (≈ ×1.2 ≈ the default Figma/Miro step).
+// notch ≈ the classic "smooth" feel (the default Figma/Miro step).
 export const WHEEL_ZOOM_FACTOR = 1.2;
-
-// WHEEL_PAN_FACTOR — pixels of pan per pixel of wheel delta while dragging
-// space with the wheel (shift+wheel = horizontal). 1:1 feels native.
-export const WHEEL_PAN_FACTOR = 1;
 
 // DRAG_PAN_FACTOR — pan pixels per pointer pixel while space-dragging /
 // middle-dragging. 1:1 (grab-the-paper feel); scale does NOT multiply drag
 // speed — the paper moves with the hand.
 export const DRAG_PAN_FACTOR = 1;
-
-// Precision rounding for the derived grid numbers: spacing/opacity snap to
-// 4 significant digits so consecutive renders produce IDENTICAL style values
-// (stable DOM, stable snapshots, no churn from float noise).
-const GRID_PRECISION = 4;
 
 // clampScale — enforce the float-edge bounds (and finite-ness). Defensive
 // only: applyZoom already keeps scale inside these bounds; this guards
@@ -135,110 +114,30 @@ export const applyPan = (
     y: transform.y - dy * DRAG_PAN_FACTOR,
 });
 
-// gridLevelSpacing — canvas-unit spacing of level `level` (0-based). Exact
-// power-of-two arithmetic: BASE_SPACING × 8^level = BASE_SPACING × 2^(3·level).
-export const gridLevelSpacing = (level: number): number =>
-    BASE_SPACING * Math.pow(GRID_LEVEL_RATIO, level);
+// gridOffset — the screen-space position of the FIRST grid line at or before
+// screen coordinate `originScreen` (the world origin's projection). Always in
+// [0, GRID_SCREEN_SPACING): the double-mod keeps negative origins positive.
+// The grid is ONE size — this offset is the only thing that changes as the
+// user pans/zooms (the lines slide, never resize).
+export const gridOffset = (originScreen: number): number =>
+    ((originScreen % GRID_SCREEN_SPACING) + GRID_SCREEN_SPACING) % GRID_SCREEN_SPACING;
 
-// gridLevelScreenSpacing — how big one level's spacing renders on screen at
-// the given scale (pixels between grid lines).
-export const gridLevelScreenSpacing = (level: number, scale: number): number =>
-    gridLevelSpacing(level) * scale;
-
-// gridLevelOpacity — the cross-fade weight of a level inside the comfort
-// band [MIN_SCREEN_SPACING, MAX_SCREEN_SPACING]. A level fully inside the
-// band renders at full strength; a level whose spacing has grown past
-// MAX_SCREEN_SPACING fades linearly toward 0 (it "hands over" to the next
-// coarser level); a level below MIN is not rendered at all (the finer level
-// owns that regime). Returns 0 for invisible levels.
-export const gridLevelOpacity = (level: number, scale: number): number => {
-    const screen = gridLevelScreenSpacing(level, scale);
-    // Below the visibility floor → the finer levels own this regime
-    if (screen < MIN_SCREEN_SPACING) return 0;
-    // Inside the comfort band → fully visible
-    if (screen <= MAX_SCREEN_SPACING) return 1;
-    // Above the band → linear fade-out toward the next coarser level's
-    // takeover point (8× further out). At exactly MAX → 1; at MAX × 8 → 0.
-    // Clamped at 0: levels far above the band (multiple levels too coarse)
-    // would otherwise produce negative weights.
-    return Math.max(
-        0,
-        (MAX_SCREEN_SPACING * GRID_LEVEL_RATIO - screen) /
-            (MAX_SCREEN_SPACING * (GRID_LEVEL_RATIO - 1)),
-    );
-};
-
-// MIN_SCREEN_SPACING — grid lines closer together than this (in screen px)
-// are not drawn (they would visually merge into gray noise).
-export const MIN_SCREEN_SPACING = 12;
-// MAX_SCREEN_SPACING — grid lines farther apart than this begin fading out
-// (the next coarser level takes over — see gridLevelOpacity).
-export const MAX_SCREEN_SPACING = 128;
-
-// levelForScale — the FINEST grid level whose screen spacing is ≥
-// MIN_SCREEN_SPACING at the given scale. Computed from log₂ (not from a
-// bounded list), so it is valid for ANY scale > 0 — however extreme — which
-// is the "infinite magnification" rendering guarantee. Returned levels are
-// always integers (Math.ceil of a log can only produce integers).
-export const levelForScale = (scale: number): number => {
-    // Spacing grows by ×8 (2³) per level → level = ceil(log8(screenNeeded /
-    // (base × scale))). The epsilon guards the exact-boundary float case.
-    const ratio = MIN_SCREEN_SPACING / (BASE_SPACING * clampScale(scale));
-    return Math.max(0, Math.ceil(Math.log(ratio) / Math.log(GRID_LEVEL_RATIO) - 1e-12));
-};
-
-// gridLevelsForScale — the render list: the finest visible level plus the
-// next two coarser ones (fine / mid / coarse). Always exactly 3 levels for
-// any scale > 0 — the mid level is always inside the comfort band by
-// construction (its screen spacing is ≥ MIN and < MIN × 8 ≤ MAX).
-export const gridLevelsForScale = (scale: number): number[] => {
-    const base = levelForScale(scale);
-    return [base, base + 1, base + 2];
-};
-
-// gridLevelStyle — the concrete SVG style numbers for one level at one scale:
-// { spacingPx, opacity }. Both are precision-rounded (GRID_PRECISION digits)
-// so identical inputs always produce identical style strings.
-export const gridLevelStyle = (
-    level: number,
-    scale: number,
-): { spacingPx: number; opacity: number } => ({
-    spacingPx: toPrecision(gridLevelScreenSpacing(level, scale)),
-    opacity: toPrecision(gridLevelOpacity(level, scale)),
-});
-
-// toPrecision — round to GRID_PRECISION significant digits (and normalize
-// -0 → 0). Used by gridLevelStyle only.
-const toPrecision = (value: number): number => {
-    const rounded = Number(value.toPrecision(GRID_PRECISION));
-    return rounded === 0 ? 0 : rounded;
-};
-
-// formatExponent — the HUD zoom readout: "×1.221e+3" style (scientific
-// notation with 4 significant digits). Scientific notation is REQUIRED here:
-// at the float edge the scale spans hundreds of orders of magnitude, where
-// fixed notation produces 300-digit strings. Number.prototype.toString
-// already switches to exponential past 1e21, but forcing it via toExponential
-// keeps the format stable across the entire range.
-export const formatExponent = (value: number): string => {
-    const safe = clampScale(value);
-    return `×${safe.toExponential(3)}`;
-};
+// gridLineCount — how many grid lines fit across a viewport of `size` px at
+// the constant GRID_SCREEN_SPACING (+1 for the boundary line). Bounded by the
+// viewport — the "infinite" plane never grows the DOM.
+export const gridLineCount = (size: number): number =>
+    Math.ceil(size / GRID_SCREEN_SPACING) + 1;
 
 // normalizeWheelFactor — wheel deltas arrive in wildly different units per
 // browser/device (pixel-mode trackpads fire many small deltas; line-mode
 // mice fire ~100px or ~3-line notches). This normalizes ANY incoming delta
 // into a consistent zoom factor: sub-notch deltas accumulate fractionally
 // (trackpad smoothness), full notches produce the full WHEEL_ZOOM_FACTOR
-// step. The factor is symmetric (zoom in for positive deltaY, out for
-// negative) and never flips the sign of the scale.
+// step. Clamped to ±3 notches so a single giant delta cannot jump more.
 export const normalizeWheelFactor = (deltaY: number): number => {
     // Magnitude of one notch in the delta's native units — browsers report
     // pixel-mode deltas in ~100px steps for a physical notch
     const NOTCH_PIXELS = 100;
-    // Fractional exponent: deltaY of ±100 → ±1 full notch. Clamped to ±3 so
-    // a single giant delta (some browsers on fast scroll) cannot jump more
-    // than 3 notches at once.
     const notches = Math.max(-3, Math.min(3, deltaY / NOTCH_PIXELS));
     return Math.pow(WHEEL_ZOOM_FACTOR, notches);
 };
@@ -253,3 +152,14 @@ export const createInitialTransform = (
     y: -viewportHeight / 2,
     scale: 1,
 });
+
+// formatExponent — the HUD zoom readout: "×1.200e+0" style (scientific
+// notation with 4 significant digits). Scientific notation is REQUIRED here:
+// the scale spans hundreds of orders of magnitude, where fixed notation
+// produces 300-digit strings. Number.prototype.toString already switches to
+// exponential past 1e21, but forcing it via toExponential keeps the format
+// stable across the entire range.
+export const formatExponent = (value: number): string => {
+    const safe = clampScale(value);
+    return `×${safe.toExponential(3)}`;
+};

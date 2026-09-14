@@ -1,122 +1,30 @@
 import React from 'react';
 import {
     canvasToScreen,
-    gridLevelStyle,
-    gridLevelsForScale,
+    gridLineCount,
+    GRID_SCREEN_SPACING,
 } from '../functions/canvasTransform';
 import type { CanvasTransform } from '../functions/canvasTransform';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GridLayer — the SVG grid renderer for the infinite canvas.
 //
-// Renders THREE grid levels (fine / mid / coarse) as SVG <line> strips, each
-// with its own spacing + opacity derived from the current scale (see
-// gridLevelStyle in ../functions/canvasTransform.ts). Because the level set
-// is computed from log₂ of the scale — not from a bounded list — the grid
-// stays correct at ANY magnification: zoom in 10× and finer levels fade in;
-// zoom out 10× and coarser levels take over. There is no "edge" to reach.
+// ONE-SIZE GRID (user contract: "the grid should be one size, and I can
+// scroll freely without the grid repeating in size"): the grid is drawn at a
+// CONSTANT screen spacing — GRID_SCREEN_SPACING px between lines at EVERY
+// zoom level. There is no level ladder and no cross-fade: zooming never
+// changes the grid's size, only its OFFSET (the lines slide so they stay
+// anchored to the world origin, which always sits on an intersection).
+// Panning slides the grid with the world; zooming slides it (the origin's
+// screen position moves) while every spacing stays 64px.
 //
 // LINE CULLING: only the lines intersecting the current viewport are drawn.
-// The count is viewportSize / spacingPx per axis (+1 for the boundary line),
-// so at any zoom the DOM holds a small, bounded number of nodes (~200 total)
-// regardless of how far the user has panned — the "infinite" plane never
-// grows the DOM.
+// The count is gridLineCount(width/height) + 1 — bounded by the viewport, so
+// the "infinite" plane never grows the DOM.
 //
 // ORIGIN CROSS: the world origin (0, 0) is highlighted with the accent color
 // so the user always knows where they are on the plane.
 // ─────────────────────────────────────────────────────────────────────────────
-
-// One grid level's line strip — memoized so panning only re-renders levels
-// whose line positions actually changed (spacing depends on scale, positions
-// on pan; the memo key includes both).
-type GridLevelProps = {
-    level: number;
-    scale: number;
-    transform: CanvasTransform;
-    width: number;
-    height: number;
-    color: string;
-};
-
-const GridLevelLines = ({
-    level,
-    scale,
-    transform,
-    width,
-    height,
-    color,
-}: GridLevelProps): React.ReactElement | null => {
-    // Style numbers for this level at this scale (precision-rounded — see
-    // gridLevelStyle). opacity 0 → skip rendering entirely (the level is
-    // outside its visibility regime at this zoom).
-    const { spacingPx, opacity } = gridLevelStyle(level, scale);
-    if (opacity <= 0 || spacingPx <= 0) return null;
-
-    // Canvas-space position of the viewport's top-left corner
-    const origin = canvasToScreen({ x: 0, y: 0 }, transform);
-    // First VISIBLE vertical line: the first grid multiple at or right of
-    // the left edge. In screen space the lines sit at multiples of spacingPx
-    // offset by the origin's screen position — computing in screen space
-    // (mod arithmetic on the offset) avoids catastrophic float cancellation
-    // at extreme scales (canvas-space coordinates reach ±1e300; screen-space
-    // offsets stay bounded by the viewport).
-    const offsetX = ((origin.x % spacingPx) + spacingPx) % spacingPx;
-    const offsetY = ((origin.y % spacingPx) + spacingPx) % spacingPx;
-    // Line count is bounded by the viewport size — the "infinite" plane
-    // never grows the DOM (module header note)
-    const countX = Math.ceil(width / spacingPx) + 1;
-    const countY = Math.ceil(height / spacingPx) + 1;
-
-    // Build the line elements. Plain loops into preallocated arrays — the
-    // counts are tiny (≤ ~200 per level) and arrayEach's callback-object
-    // overhead would dominate this hot render path.
-    const verticals: React.ReactElement[] = new Array(countX);
-    for (let index = 0; index < countX; index++) {
-        const x = index * spacingPx - offsetX;
-        verticals[index] = (
-            <line
-                key={`v${index}`}
-                x1={x}
-                y1={0}
-                x2={x}
-                y2={height}
-                stroke={color}
-                strokeWidth={1}
-            />
-        );
-    }
-    const horizontals: React.ReactElement[] = new Array(countY);
-    for (let index = 0; index < countY; index++) {
-        const y = index * spacingPx - offsetY;
-        horizontals[index] = (
-            <line
-                key={`h${index}`}
-                x1={0}
-                y1={y}
-                x2={width}
-                y2={y}
-                stroke={color}
-                strokeWidth={1}
-            />
-        );
-    }
-
-    return (
-        <g opacity={opacity} data-testid={`grid-level-${level}`}>
-            {verticals}
-            {horizontals}
-        </g>
-    );
-};
-
-// The origin cross — two short accent lines through world (0, 0), rendered
-// on TOP of the grid so the user can always locate the coordinate origin.
-// Hidden entirely when the origin is off-screen (the cross would otherwise
-// render as huge clipped lines).
-//
-// NOTE: plain <line> elements with the stroke as an SVG ATTRIBUTE (not
-// emotion CSS) — CSS-class styling is invisible to getAttribute() in tests
-// and the visibility toggle is a hard on/off, not a style variation.
 
 // The full grid surface. Props mirror the canvas viewport: the current
 // transform and the pixel size of the canvas area. Consumed ONLY by
@@ -134,36 +42,80 @@ export const GridLayer = ({
     // component stays decoupled from the palette module
     colors: { line: string; origin: string };
 }): React.ReactElement => {
-    // The three render levels for the current scale (fine / mid / coarse)
-    const levels = gridLevelsForScale(transform.scale);
-
-    // Screen position of the world origin — drives the origin cross
+    // Screen position of the world origin — the grid's anchor point. The
+    // constant-size grid lines sit at originScreen ± multiples of
+    // GRID_SCREEN_SPACING, so the origin ALWAYS lands exactly on a grid
+    // intersection (the i = 0 line pair passes through it).
     const originScreen = canvasToScreen({ x: 0, y: 0 }, transform);
+
+    // Line placement: anchor lines AT the origin and extend outward in both
+    // directions. The lowest index is chosen so the first line is at or
+    // before the left/top edge (Math.floor of the negative distance):
+    //   first vertical index = floor((0 − originScreen.x) / spacing)
+    //   → line x = originScreen.x + index × spacing ≤ 0
+    // This keeps the origin on an intersection at EVERY zoom (the one-size
+    // contract's anchoring requirement) and the count bounded by the
+    // viewport. Computed in SCREEN space — no canvas-coordinate float
+    // cancellation at extreme scales.
+    const firstIndexX = Math.floor((0 - originScreen.x) / GRID_SCREEN_SPACING);
+    const firstIndexY = Math.floor((0 - originScreen.y) / GRID_SCREEN_SPACING);
+
+    // Line counts are bounded by the viewport size — the "infinite" plane
+    // never grows the DOM (module header note). +1 slack on each side for
+    // the boundary lines.
+    const countX = gridLineCount(width) + 1;
+    const countY = gridLineCount(height) + 1;
+
+    // Build the line elements. Plain loops into preallocated arrays — the
+    // counts are tiny (≤ ~200 per axis pair) and callback-object overhead
+    // would dominate this hot render path.
+    const verticals: React.ReactElement[] = new Array(countX);
+    for (let index = 0; index < countX; index++) {
+        const x = originScreen.x + (firstIndexX + index) * GRID_SCREEN_SPACING;
+        verticals[index] = (
+            <line
+                key={`v${index}`}
+                x1={x}
+                y1={0}
+                x2={x}
+                y2={height}
+                stroke={colors.line}
+                strokeWidth={1}
+            />
+        );
+    }
+    const horizontals: React.ReactElement[] = new Array(countY);
+    for (let index = 0; index < countY; index++) {
+        const y = originScreen.y + (firstIndexY + index) * GRID_SCREEN_SPACING;
+        horizontals[index] = (
+            <line
+                key={`h${index}`}
+                x1={0}
+                y1={y}
+                x2={width}
+                y2={y}
+                stroke={colors.line}
+                strokeWidth={1}
+            />
+        );
+    }
+
+    // Origin visibility: hide the cross entirely when the origin is
+    // off-screen (the cross would otherwise render as huge clipped lines)
     const originVisible =
         originScreen.x >= -8 &&
         originScreen.x <= width + 8 &&
         originScreen.y >= -8 &&
         originScreen.y <= height + 8;
 
-    // The accent color is injected via a CSS custom property (styledComponent
-    // has no per-instance CSS-variable support for static values) — set on
-    // the wrapping <g> so both cross lines read it.
     return (
-        <g style={{ ['--draw-origin-color' as never]: colors.origin }}>
-            {levels.map((level) => (
-                <GridLevelLines
-                    key={level}
-                    level={level}
-                    scale={transform.scale}
-                    transform={transform}
-                    width={width}
-                    height={height}
-                    color={colors.line}
-                />
-            ))}
+        <g data-testid="grid-layer">
+            {verticals}
+            {horizontals}
             {/* Origin cross — horizontal + vertical accent strokes through
                 world (0, 0), 16px long, centered on the origin. stroke is an
-                SVG attribute (see OriginCross note above). */}
+                SVG attribute (not emotion CSS) so the visibility toggle is a
+                hard on/off readable from the DOM. */}
             <line
                 x1={originScreen.x - 8}
                 y1={originScreen.y}

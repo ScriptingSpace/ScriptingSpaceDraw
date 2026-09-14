@@ -9,7 +9,6 @@ import {
     applyZoom,
     createInitialTransform,
     normalizeWheelFactor,
-    screenToCanvas,
 } from '../functions/canvasTransform';
 import type { CanvasTransform } from '../functions/canvasTransform';
 import { GridLayer } from '../components/GridLayer';
@@ -20,12 +19,17 @@ import {
     PALETTE_BACKGROUND,
     PALETTE_SURFACE,
     PALETTE_TEXT_BRIGHT,
-    PALETTE_TEXT_BODY,
     PALETTE_TEXT_FAINT,
 } from '../functions/palette';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DrawDashboard — the infinite grid canvas.
+//
+// LAYOUT (user contract: "there is no header or footer here; the title should
+// simply be 'Draw Dashboard v1.0.0' floating top left"): the canvas fills the
+// ENTIRE viewport. No header bar, no footer bar. The version title is a small
+// floating label pinned to the top-left corner, above the canvas (pointer-
+// events: none so it never blocks canvas interaction).
 //
 // INTERACTION MODEL (all state = ONE CanvasTransform { x, y, scale }):
 // - Mouse wheel anywhere on the canvas → zoom AT THE POINTER (the canvas
@@ -34,41 +38,51 @@ import {
 // - Space held + mouse drag, OR middle-button drag → pan (grab-the-paper).
 // - "Reset view" HUD button → back to origin-centered, scale 1.
 //
-// RENDER MODEL: a single SVG covering the viewport. The grid (GridLayer)
-// draws the three visible grid levels; the transform is applied by
-// recomputing line positions from the transform each render (no CSS
-// transform on a giant plane — that would break down at extreme scales).
+// GRID MODEL: ONE size, always (see GridLayer.tsx + GRID_SCREEN_SPACING) —
+// zooming never resizes the grid, it only slides.
 //
 // POINTER MATH: all event coordinates are converted to viewport-relative
 // pixels via getBoundingClientRect (getPointerPoint below) — required
 // because jsdom reports clientX/Y relative to the viewport while the canvas
-// may not start at (0, 0) once the header/footer take their space.
+// may not start at (0, 0).
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Local palette tokens (declared BEFORE the styled rules — the
 // styledComponent input objects evaluate eagerly at module init, so the
-// constants must already exist; kept local for a minimal palette surface.
-// Cross-reference: ScribbleDashboard.tsx imports them from ../functions.)
-// Secondary subtitle color
-const PALETTE_SECONDARY = '#bb9af7';
+// constants must already exist. Cross-reference: ScribbleDashboard.tsx
+// imports them from ../functions instead; kept local for a minimal surface.)
 // Canvas well background (deeper than the app background)
 const PALETTE_WELL = '#1a1b26';
 
-// Canvas surface — fills the area between header and footer, captures wheel
-// + pointer events. cursor reflects the interaction state (grab while
-// space-dragging / panning). Ref-forwarding cast: the styledComponent return
-// type (React.FC) lacks `ref` — Emotion forwards it at runtime (same cast
-// pattern documented in the presource styledComponent notes).
+// Root shell — locked to the viewport (app.css zeroes the body margin and
+// locks overflow). The canvas IS the whole app: no header, no footer.
+const DashboardRoot = styledComponent('div', {
+    height: '100%',
+    width: '100%',
+    position: 'relative' as const,
+    background: PALETTE_WELL,
+    color: '#a9b1d6',
+    fontFamily:
+        'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+    boxSizing: 'border-box' as const,
+    overflow: 'hidden' as const,
+});
+
+// Canvas surface — fills the entire viewport, captures wheel + pointer
+// events. Ref-forwarding cast: the styledComponent return type (React.FC)
+// lacks `ref` — Emotion forwards it at runtime (same cast pattern documented
+// in the presource styledComponent notes).
 const CanvasSurface = styledComponent<{ panning: boolean }>(
     'div',
     {
-        position: 'relative' as const,
-        flex: 1,
-        minHeight: 0,
+        position: 'absolute' as const,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
         overflow: 'hidden' as const,
-        background: PALETTE_WELL,
         // grabbing while actively panning (the grab hint while space is held
-        // but not yet dragging comes from the footer status line)
+        // but not yet dragging comes from the HUD status line)
         cursor: ({ panning }) => (panning ? 'grabbing' : 'default'),
     },
 ) as unknown as React.FC<
@@ -77,54 +91,29 @@ const CanvasSurface = styledComponent<{ panning: boolean }>(
     }
 >;
 
-// Header bar — same geometry family as the Scribble/Formatter dashboards
-const HeaderBar = styledComponent('header', {
-    padding: '12px 16px',
-    background: PALETTE_SURFACE,
-    borderBottom: `1px solid ${PALETTE_BORDER}`,
-});
-
-const HeaderTitle = styledComponent('h1', {
-    margin: 0,
-    fontSize: 22,
-    fontWeight: 700,
-    color: PALETTE_TEXT_BRIGHT,
-});
-
-const HeaderSubtitle = styledComponent('p', {
-    margin: 0,
+// Floating title — "Draw Dashboard v1.0.0" pinned top-left, ABOVE the canvas
+// but click-through (pointerEvents: none) so it never blocks zoom/pan. The
+// version comes from the compile-time __APP_VERSION__ constant injected by
+// vite.config.ts `define` (declared ambient in src/vite-env.d.ts).
+const FloatingTitle = styledComponent('div', {
+    position: 'absolute' as const,
+    top: 12,
+    left: 16,
+    zIndex: 10,
     fontSize: 13,
-    color: PALETTE_SECONDARY,
-});
-
-// Footer bar — version + hint line
-const FooterBar = styledComponent('footer', {
-    padding: '8px 16px',
-    background: PALETTE_SURFACE,
-    borderTop: `1px solid ${PALETTE_BORDER}`,
-    fontSize: 12,
-    color: PALETTE_TEXT_FAINT,
-});
-
-// Root shell — locked to the viewport (app.css zeroes the body margin and
-// locks overflow), column layout: header / canvas / footer
-const DashboardRoot = styledComponent('div', {
-    height: '100%',
-    width: '100%',
-    display: 'flex',
-    flexDirection: 'column',
-    background: PALETTE_BACKGROUND,
-    color: PALETTE_TEXT_BODY,
-    fontFamily:
-        'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-    boxSizing: 'border-box' as const,
-    overflow: 'hidden' as const,
+    fontWeight: 600,
+    color: PALETTE_TEXT_BRIGHT,
+    // Subtle scrim so the title stays readable over grid lines
+    background: 'rgba(26, 27, 38, 0.7)',
+    padding: '4px 10px',
+    borderRadius: 6,
+    pointerEvents: 'none' as const,
+    userSelect: 'none' as const,
 });
 
 export const DrawDashboard = React.memo(() => {
     // THE single source of truth for the canvas: pan (x, y in canvas units
-    // at the viewport's top-left corner) + scale. Initialized on first
-    // measure (see the measure effect below).
+    // at the viewport's top-left corner) + scale.
     const transform = useStateHook<CanvasTransform>(createInitialTransform(800, 600));
 
     // Interaction state
@@ -136,7 +125,7 @@ export const DrawDashboard = React.memo(() => {
     const surfaceRef = useReferenceHook<HTMLDivElement | null>(null);
     const lastPointer = useReferenceHook<{ x: number; y: number } | null>(null);
 
-    // Viewport size of the canvas area (for the grid renderer + initial
+    // Viewport size of the canvas area (for the grid renderer + reset
     // centering). Kept in state so the grid re-renders on resize.
     const viewportSize = useStateHook<{ width: number; height: number }>({
         width: 800,
@@ -144,7 +133,7 @@ export const DrawDashboard = React.memo(() => {
     });
 
     // Viewport-relative pointer position from a mouse event (the canvas may
-    // be offset by the header — clientX/Y alone would be wrong)
+    // be offset in non-fullscreen embeds — clientX/Y alone would be wrong)
     const getPointerPoint = (event: { clientX: number; clientY: number }) => {
         const surface = surfaceRef();
         if (!surface) return { x: event.clientX, y: event.clientY };
@@ -152,9 +141,8 @@ export const DrawDashboard = React.memo(() => {
         return { x: event.clientX - rect.left, y: event.clientY - rect.top };
     };
 
-    // Measure the canvas area on mount + on window resize; seed the initial
-    // transform so the world origin starts at the viewport center. The
-    // measure callback reads rect LAZILY on every invocation (not once at
+    // Measure the canvas area on mount + on window resize. The measure
+    // callback reads rect LAZILY on every invocation (not once at
     // effect-mount) so test environments that stub getBoundingClientRect
     // after render still measure correctly on the next resize/reset.
     React.useEffect(() => {
@@ -247,12 +235,6 @@ export const DrawDashboard = React.memo(() => {
 
     return (
         <DashboardRoot data-testid="dashboard-root">
-            <HeaderBar>
-                <HeaderTitle>Draw Dashboard</HeaderTitle>
-                <HeaderSubtitle>
-                    Infinite grid canvas — scroll to zoom, space + drag to pan
-                </HeaderSubtitle>
-            </HeaderBar>
             <CanvasSurface
                 ref={surfaceRef as never}
                 panning={panning()}
@@ -263,8 +245,7 @@ export const DrawDashboard = React.memo(() => {
                 data-testid="canvas-surface"
             >
                 {/* The SVG grid — recomputed from the transform each render.
-                    The canvas-space point under the cursor is exposed for
-                    tests / future features via the data attribute below. */}
+                    ONE grid size at every zoom (see GridLayer). */}
                 <svg
                     width={viewportSize().width}
                     height={viewportSize().height}
@@ -291,17 +272,15 @@ export const DrawDashboard = React.memo(() => {
                     }}
                 />
             </CanvasSurface>
-            <FooterBar data-testid="dashboard-footer">
-                <span data-testid="footer-version">Draw Dashboard v{__APP_VERSION__}</span>
-                {' — '}
-                <span data-testid="footer-cursor-info">
-                    {panning() ? 'panning…' : spaceHeld() ? 'space held — drag to pan' : 'ready'}
-                </span>
-            </FooterBar>
+            {/* Floating title — top-left, click-through, above the canvas.
+                NO header bar, NO footer bar: the canvas owns the viewport. */}
+            <FloatingTitle data-testid="floating-title">
+                Draw Dashboard v{__APP_VERSION__}
+            </FloatingTitle>
         </DashboardRoot>
     );
 });
 
 // Re-export for consumers that want the canvas-space read helper alongside
 // the dashboard (pure math passthrough — see canvasTransform.ts)
-export { screenToCanvas };
+export { applyPan, applyZoom, screenToCanvas } from '../functions/canvasTransform';
