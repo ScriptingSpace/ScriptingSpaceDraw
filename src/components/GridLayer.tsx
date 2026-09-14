@@ -2,25 +2,32 @@ import React from 'react';
 import {
     canvasToScreen,
     gridLineCount,
-    GRID_SCREEN_SPACING,
+    gridScreenSpacing,
+    MIN_SCREEN_SPACING,
 } from '../functions/canvasTransform';
 import type { CanvasTransform } from '../functions/canvasTransform';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GridLayer — the SVG grid renderer for the infinite canvas.
 //
-// ONE-SIZE GRID (user contract: "the grid should be one size, and I can
-// scroll freely without the grid repeating in size"): the grid is drawn at a
-// CONSTANT screen spacing — GRID_SCREEN_SPACING px between lines at EVERY
-// zoom level. There is no level ladder and no cross-fade: zooming never
-// changes the grid's size, only its OFFSET (the lines slide so they stay
-// anchored to the world origin, which always sits on an intersection).
-// Panning slides the grid with the world; zooming slides it (the origin's
-// screen position moves) while every spacing stays 64px.
+// WORLD-ANCHORED GRID, FIXED WORLD CELL SIZE (user contract: "the grid size
+// is fixed, like 100px, and zooming in and out would shrink or grow these
+// like it normally would"): every grid line sits at a WORLD coordinate that
+// is a multiple of BASE_SPACING = 100 canvas units — at every zoom level.
+// On screen the cells render at BASE_SPACING × scale px:
+// - zoom IN  → cells GROW  (100-unit cell becomes 120px, 240px, …)
+// - zoom OUT → cells SHRINK (100-unit cell becomes 80px, 40px, …)
+// exactly like a normal canvas app (Figma/Miro). Panning slides the grid
+// with the world; the world origin (0, 0) always sits on an intersection.
+//
+// FADE-OUT at extreme zoom-out: when the screen spacing drops below
+// MIN_SCREEN_SPACING (2px) the lines would merge into solid noise and the
+// line count would explode; the whole grid fades to 0 opacity there
+// (graceful degradation — no user operates in that regime).
 //
 // LINE CULLING: only the lines intersecting the current viewport are drawn.
-// The count is gridLineCount(width/height) + 1 — bounded by the viewport, so
-// the "infinite" plane never grows the DOM.
+// The count is gridLineCount(width/height) — bounded by the viewport ÷
+// spacing, so the "infinite" plane never grows the DOM.
 //
 // ORIGIN CROSS: the world origin (0, 0) is highlighted with the accent color
 // so the user always knows where they are on the plane.
@@ -42,36 +49,67 @@ export const GridLayer = ({
     // component stays decoupled from the palette module
     colors: { line: string; origin: string };
 }): React.ReactElement => {
-    // Screen position of the world origin — the grid's anchor point. The
-    // constant-size grid lines sit at originScreen ± multiples of
-    // GRID_SCREEN_SPACING, so the origin ALWAYS lands exactly on a grid
-    // intersection (the i = 0 line pair passes through it).
+    // Screen spacing of one grid cell at the current scale — GROWS when
+    // zooming in, SHRINKS when zooming out (the world-anchored contract)
+    const spacing = gridScreenSpacing(transform.scale);
+
+    // Screen position of the world origin — the grid's anchor. Lines sit at
+    // world multiples of BASE_SPACING, whose screen positions are
+    // (k × BASE_SPACING − pan) × scale = k × spacing − originScreen.
     const originScreen = canvasToScreen({ x: 0, y: 0 }, transform);
 
-    // Line placement: anchor lines AT the origin and extend outward in both
-    // directions. The lowest index is chosen so the first line is at or
-    // before the left/top edge (Math.floor of the negative distance):
-    //   first vertical index = floor((0 − originScreen.x) / spacing)
-    //   → line x = originScreen.x + index × spacing ≤ 0
-    // This keeps the origin on an intersection at EVERY zoom (the one-size
-    // contract's anchoring requirement) and the count bounded by the
-    // viewport. Computed in SCREEN space — no canvas-coordinate float
-    // cancellation at extreme scales.
-    const firstIndexX = Math.floor((0 - originScreen.x) / GRID_SCREEN_SPACING);
-    const firstIndexY = Math.floor((0 - originScreen.y) / GRID_SCREEN_SPACING);
+    // Extreme zoom-out guard: below the visibility floor the lines merge
+    // into noise → render nothing (fade handled by the opacity below)
+    if (spacing < MIN_SCREEN_SPACING) {
+        return (
+            <g data-testid="grid-layer" opacity={0}>
+                <line
+                    x1={originScreen.x - 8}
+                    y1={originScreen.y}
+                    x2={originScreen.x + 8}
+                    y2={originScreen.y}
+                    stroke="transparent"
+                    strokeWidth={2}
+                    data-testid="origin-cross-h"
+                />
+                <line
+                    x1={originScreen.x}
+                    y1={originScreen.y - 8}
+                    x2={originScreen.x}
+                    y2={originScreen.y + 8}
+                    stroke="transparent"
+                    strokeWidth={2}
+                    data-testid="origin-cross-v"
+                />
+            </g>
+        );
+    }
 
-    // Line counts are bounded by the viewport size — the "infinite" plane
-    // never grows the DOM (module header note). +1 slack on each side for
-    // the boundary lines.
-    const countX = gridLineCount(width) + 1;
-    const countY = gridLineCount(height) + 1;
+    // First VISIBLE line index per axis: lines sit at world multiples of
+    // BASE_SPACING; the screen position of world (k × BASE_SPACING) is
+    //   (k × BASE_SPACING − pan) × scale = k × spacing + originScreen
+    // (originScreen = (0 − pan) × scale — the origin's own projection, so
+    // the k = 0 line passes exactly through the origin intersection).
+    // The first visible index is the smallest k whose line is at or right
+    // of the left edge:
+    //   k × spacing + originScreen ≥ 0 → k ≥ −originScreen / spacing
+    //   → k = ceil(−originScreen / spacing)
+    // Computed in SCREEN space (bounded numbers) — avoids catastrophic float
+    // cancellation at extreme scales (canvas coordinates reach ±1e300).
+    const firstIndexX = Math.ceil(-originScreen.x / spacing);
+    const firstIndexY = Math.ceil(-originScreen.y / spacing);
+
+    // Line counts are bounded by the viewport ÷ spacing — the "infinite"
+    // plane never grows the DOM (module header note)
+    const countX = gridLineCount(width, spacing);
+    const countY = gridLineCount(height, spacing);
 
     // Build the line elements. Plain loops into preallocated arrays — the
     // counts are tiny (≤ ~200 per axis pair) and callback-object overhead
     // would dominate this hot render path.
     const verticals: React.ReactElement[] = new Array(countX);
     for (let index = 0; index < countX; index++) {
-        const x = originScreen.x + (firstIndexX + index) * GRID_SCREEN_SPACING;
+        const x = (firstIndexX + index) * spacing + originScreen.x;
         verticals[index] = (
             <line
                 key={`v${index}`}
@@ -86,7 +124,7 @@ export const GridLayer = ({
     }
     const horizontals: React.ReactElement[] = new Array(countY);
     for (let index = 0; index < countY; index++) {
-        const y = originScreen.y + (firstIndexY + index) * GRID_SCREEN_SPACING;
+        const y = (firstIndexY + index) * spacing + originScreen.y;
         horizontals[index] = (
             <line
                 key={`h${index}`}

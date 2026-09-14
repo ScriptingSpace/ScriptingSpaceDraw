@@ -2,7 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { describe, it, expect, afterEach } from 'vitest';
 import { DrawDashboard } from './DrawDashboard';
-import { screenToCanvas, GRID_SCREEN_SPACING } from '../functions/canvasTransform';
+import { screenToCanvas, BASE_SPACING } from '../functions/canvasTransform';
 
 afterEach(() => {
     cleanup();
@@ -67,11 +67,21 @@ const readHorizontalLineYs = (): number[] => {
 };
 
 // Gaps between consecutive sorted line positions — asserts the grid's
-// on-screen spacing (the "one size" contract)
+// on-screen cell size (the world-anchored contract: gaps = BASE_SPACING ×
+// scale, growing when zooming in, shrinking when zooming out)
 const readGaps = (positions: number[]): number[] => {
     const sorted = [...positions].sort((a, b) => a - b);
     return sorted.slice(1).map((value, index) => value - sorted[index]);
 };
+
+// All gaps uniform within double-precision tolerance? The line positions
+// are computed as k × spacing − origin; for non-representable spacings
+// (e.g. 100/1.2) the SUBTRACTION of two large rounded products can differ
+// from the exact spacing by ~1 ULP (~1e-13 relative). Visually identical;
+// asserted with a tight relative tolerance instead of bit equality.
+const allGapsEqual = (gaps: number[], expected: number): boolean =>
+    gaps.length > 0 &&
+    gaps.every((gap) => Math.abs(gap - expected) <= Math.abs(expected) * 1e-9);
 
 describe('DrawDashboard — shell', () => {
     it('renders the floating title, canvas surface and HUD — NO header/footer bars', () => {
@@ -101,71 +111,73 @@ describe('DrawDashboard — shell', () => {
     });
 });
 
-describe('DrawDashboard — the grid is ONE size (never resizes)', () => {
-    it('renders vertical + horizontal lines at the constant 64px spacing', () => {
+describe('DrawDashboard — world-anchored grid: zoom grows/shrinks the cells', () => {
+    it('renders 100px cells at scale 1 (BASE_SPACING = 100 world units)', () => {
         render(<DrawDashboard />);
         stubSurfaceRect();
 
         // Every gap between consecutive vertical/horizontal lines is exactly
-        // GRID_SCREEN_SPACING (64px) — the one grid size
-        const vGaps = readGaps(readVerticalLineXs());
-        const hGaps = readGaps(readHorizontalLineYs());
-        expect(vGaps.every((gap) => gap === GRID_SCREEN_SPACING)).toBe(true);
-        expect(hGaps.every((gap) => gap === GRID_SCREEN_SPACING)).toBe(true);
-        // Line counts: gridLineCount(800)+1 = 15 vertical, gridLineCount(600)+1 = 12
-        // horizontal (+1 slack each for the boundary line beyond the edge)
-        expect(readVerticalLineXs().length).toBe(15);
-        expect(readHorizontalLineYs().length).toBe(12);
+        // BASE_SPACING × 1 = 100px
+        expect(allGapsEqual(readGaps(readVerticalLineXs()), 100)).toBe(true);
+        expect(allGapsEqual(readGaps(readHorizontalLineYs()), 100)).toBe(true);
+        // Line counts: ceil(800/100)+1 = 9 vertical, ceil(600/100)+1 = 7 horizontal
+        expect(readVerticalLineXs().length).toBe(9);
+        expect(readHorizontalLineYs().length).toBe(7);
     });
 
-    it('keeps the SAME 64px spacing after zooming in and out (no re-leveling)', () => {
+    it('GROWS the cells when zooming in (×1.2 notch → 120px cells)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
-        // Zoom in 10 notches, then out 25 notches — the gaps must STILL be
-        // exactly 64px. The grid never changes size; only its offset slides.
-        for (let index = 0; index < 10; index++) {
+        // One ×1.2 notch → spacing 100 × 1.2 = 120px
+        fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: 100 });
+        expect(allGapsEqual(readGaps(readVerticalLineXs()), 120)).toBe(true);
+        expect(allGapsEqual(readGaps(readHorizontalLineYs()), 120)).toBe(true);
+        // Fewer lines fit: ceil(800/120)+1 = 7 + 1 = 8? ceil(6.67)=7, +1 = 8
+        expect(readVerticalLineXs().length).toBe(8);
+    });
+
+    it('SHRINKS the cells when zooming out (÷1.2 notch → 83.33px cells)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // One ÷1.2 notch → spacing 100 / 1.2 = 83.333…px. Gap positions are
+        // differences of k × spacing products, which carry ~1 ULP of
+        // subtraction rounding for non-representable spacings — asserted
+        // via the tight 1e-9 relative tolerance in allGapsEqual.
+        fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: -100 });
+        const spacing = BASE_SPACING / 1.2;
+        expect(allGapsEqual(readGaps(readVerticalLineXs()), spacing)).toBe(true);
+        expect(allGapsEqual(readGaps(readHorizontalLineYs()), spacing)).toBe(true);
+        // More lines fit: ceil(800/83.33)+1 = ceil(9.6)=10, +1 = 11
+        expect(readVerticalLineXs().length).toBe(11);
+    });
+
+    it('keeps growing/shrinking smoothly over many notches (no re-leveling jumps)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // 3 zoom-ins: scale 1.728 → spacing 172.8px
+        for (let index = 0; index < 3; index++) {
             fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: 100 });
         }
-        for (let index = 0; index < 25; index++) {
+        const spacingIn = BASE_SPACING * Math.pow(1.2, 3);
+        expect(allGapsEqual(readGaps(readVerticalLineXs()), spacingIn)).toBe(true);
+
+        // 3 zoom-outs from there: back to scale 1 → spacing 100px
+        for (let index = 0; index < 3; index++) {
             fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: -100 });
         }
-        const vGaps = readGaps(readVerticalLineXs());
-        const hGaps = readGaps(readHorizontalLineYs());
-        expect(vGaps.every((gap) => gap === GRID_SCREEN_SPACING)).toBe(true);
-        expect(hGaps.every((gap) => gap === GRID_SCREEN_SPACING)).toBe(true);
-        // Same bounded line counts — no extra lines appear at any zoom
-        expect(readVerticalLineXs().length).toBe(15);
-        expect(readHorizontalLineYs().length).toBe(12);
-    });
-
-    it('slides (not resizes) while panning: the origin follows the hand', () => {
-        render(<DrawDashboard />);
-        const surface = stubSurfaceRect();
-
-        // Pan 100px right, 50px down → origin moves +100/+50 on screen
-        fireEvent.keyDown(window, { code: 'Space' });
-        fireEvent.pointerDown(surface, { clientX: 300, clientY: 200, button: 0 });
-        fireEvent.pointerMove(surface, { clientX: 400, clientY: 250 });
-        fireEvent.pointerUp(surface, {});
-        fireEvent.keyUp(window, { code: 'Space' });
-
-        expect(readOriginCross()).toEqual({ x: 500, y: 350 });
-        // Spacing unchanged
-        const vGaps = readGaps(readVerticalLineXs());
-        expect(vGaps.every((gap) => gap === GRID_SCREEN_SPACING)).toBe(true);
+        expect(allGapsEqual(readGaps(readVerticalLineXs()), 100)).toBe(true);
     });
 
     it('anchors the origin exactly on a grid intersection at every zoom', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
-        // After ANY zoom, the origin's screen position must be an exact
-        // multiple of GRID_SCREEN_SPACING away from every line origin —
-        // i.e. origin.x mod 64 must equal the first line's offset. Since
-        // lines are placed at multiples of 64 minus the origin's own
-        // offset, the origin ALWAYS lands on an intersection: the line
-        // set must contain a line exactly at origin.x and origin.y.
+        // After ANY zoom, the origin's screen position must coincide with a
+        // grid line on both axes: lines sit at world multiples of 100, and
+        // world (0,0) is such a multiple — its projection IS a line.
         for (let index = 0; index < 7; index++) {
             fireEvent.wheel(surface, { clientX: 250, clientY: 180, deltaY: 100 });
         }
@@ -174,6 +186,25 @@ describe('DrawDashboard — the grid is ONE size (never resizes)', () => {
         const ys = readHorizontalLineYs();
         expect(xs).toContain(origin.x);
         expect(ys).toContain(origin.y);
+    });
+
+    it('keeps the world point under the cursor pinned while zooming', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Zoom in at (200, 150): the canvas point under the cursor stays
+        // there (the zoom-at-pointer contract)
+        const transformBefore = { x: -400, y: -300, scale: 1 };
+        const pinned = screenToCanvas({ x: 200, y: 150 }, transformBefore);
+        expect(pinned).toEqual({ x: -200, y: -150 });
+
+        fireEvent.wheel(surface, { clientX: 200, clientY: 150, deltaY: 100 });
+        // Exact new origin position: pan after zoom at (200,150):
+        // x = 200/1 − 200/1.2 + (−400) = −366.666… → origin.x = 366.666… × 1.2 = 440
+        // y = 150/1 − 150/1.2 + (−300) = −275 → origin.y = 275 × 1.2 = 330
+        const after = readOriginCross();
+        expect(after.x).toBeCloseTo(440, 6);
+        expect(after.y).toBeCloseTo(330, 6);
     });
 });
 
@@ -200,34 +231,6 @@ describe('DrawDashboard — wheel zoom', () => {
         expect(readHudScale()).toBe('×8.333e-1');
     });
 
-    it('pins the canvas point under an OFF-CENTER cursor while zooming', () => {
-        render(<DrawDashboard />);
-        const surface = stubSurfaceRect();
-
-        // Wheel at (200, 150): the canvas point under the cursor before the
-        // zoom is (−200, −150) (transform −400/−300, scale 1). After one
-        // ×1.2 step that same canvas point must still sit at screen
-        // (200, 150) — the origin cross moves accordingly.
-        const before = readOriginCross();
-        fireEvent.wheel(surface, { clientX: 200, clientY: 150, deltaY: 100 });
-        const after = readOriginCross();
-
-        // Canvas point under the cursor is INVARIANT
-        const transformBefore = { x: -400, y: -300, scale: 1 };
-        const pinned = screenToCanvas({ x: 200, y: 150 }, transformBefore);
-        expect(pinned).toEqual({ x: -200, y: -150 });
-        // The origin moved AWAY from the cursor (zoom-in expands the world
-        // around the anchor; the cursor sits left/above the origin, so the
-        // origin is pushed right/down): (400,300) → (440, 330)
-        expect(after.x).toBeGreaterThan(before.x);
-        expect(after.y).toBeGreaterThan(before.y);
-        // Exact new origin position: pan after zoom at (200,150):
-        // x = 200/1 − 200/1.2 + (−400) = −366.666… → origin.x = 366.666… × 1.2 = 440
-        // y = 150/1 − 150/1.2 + (−300) = −275 → origin.y = 275 × 1.2 = 330
-        expect(after.x).toBeCloseTo(440, 6);
-        expect(after.y).toBeCloseTo(330, 6);
-    });
-
     it('reaches unbounded magnification over repeated notches (no zoom ceiling)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
@@ -249,6 +252,22 @@ describe('DrawDashboard — wheel zoom', () => {
             fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: -100 });
         }
         expect(readHudScale()).toBe('×2.126e-32');
+    });
+
+    it('fades the grid out gracefully at extreme zoom-out (spacing < 2px)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Zoom out until the spacing (100 × scale) drops below 2px:
+        // scale < 0.02 → 24 notches: 1.2^24 ≈ 79.5 → scale ≈ 0.0126 →
+        // spacing ≈ 1.26px < 2 → the grid renders empty (no grid lines)
+        for (let index = 0; index < 24; index++) {
+            fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: -100 });
+        }
+        expect(readVerticalLineXs().length).toBe(0);
+        expect(readHorizontalLineYs().length).toBe(0);
+        // The HUD keeps reporting the scale — the canvas still works
+        expect(readHudScale()).toBe('×1.258e-2');
     });
 });
 
@@ -310,6 +329,20 @@ describe('DrawDashboard — panning', () => {
 
         expect(readOriginCross()).toEqual({ x: 500, y: 350 });
     });
+
+    it('slides the grid with the world while panning (cells keep their size)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        fireEvent.keyDown(window, { code: 'Space' });
+        fireEvent.pointerDown(surface, { clientX: 300, clientY: 200, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 250 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.keyUp(window, { code: 'Space' });
+
+        // Cells are still exactly 100px after the pan
+        expect(allGapsEqual(readGaps(readVerticalLineXs()), 100)).toBe(true);
+    });
 });
 
 describe('DrawDashboard — HUD reset', () => {
@@ -332,6 +365,8 @@ describe('DrawDashboard — HUD reset', () => {
         fireEvent.click(screen.getByTestId('hud-reset'));
         expect(readHudScale()).toBe('×1.000e+0');
         expect(readOriginCross()).toEqual({ x: 400, y: 300 });
+        // Grid back to 100px cells
+        expect(allGapsEqual(readGaps(readVerticalLineXs()), 100)).toBe(true);
     });
 });
 
@@ -349,11 +384,11 @@ describe('DrawDashboard — grid line culling', () => {
         fireEvent.pointerUp(surface, {});
         fireEvent.keyUp(window, { code: 'Space' });
 
-        // Line count: (gridLineCount(800)+1) vertical + (gridLineCount(600)+1)
-        // horizontal = 15 + 12 = 27 lines, PLUS the 2 origin-cross lines
-        // (hidden but still mounted) = 29 total in the layer
+        // Line count: (ceil(800/100)+1) vertical + (ceil(600/100)+1)
+        // horizontal = 9 + 7 = 16 lines, PLUS the 2 origin-cross lines
+        // (hidden but still mounted) = 18 total in the layer
         const layer = screen.getByTestId('grid-layer');
-        expect(layer.children.length).toBe(29);
+        expect(layer.children.length).toBe(18);
         // The origin cross is long gone off-screen → hidden (transparent)
         const cross = screen.getByTestId('origin-cross-h');
         expect(cross.getAttribute('stroke')).toBe('transparent');

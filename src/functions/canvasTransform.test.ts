@@ -2,13 +2,13 @@ import { describe, it, expect } from 'vitest';
 import {
     applyPan,
     applyZoom,
+    BASE_SPACING,
     canvasToScreen,
     clampScale,
     createInitialTransform,
     formatExponent,
     gridLineCount,
-    gridOffset,
-    GRID_SCREEN_SPACING,
+    gridScreenSpacing,
     normalizeWheelFactor,
     SCALE_MAX,
     SCALE_MIN,
@@ -116,30 +116,27 @@ describe('canvasTransform — pan', () => {
     });
 });
 
-describe('canvasTransform — one-size grid helpers', () => {
-    it('GRID_SCREEN_SPACING is the single constant grid size', () => {
-        expect(GRID_SCREEN_SPACING).toBe(64);
+describe('canvasTransform — world-anchored grid (fixed world cell size)', () => {
+    it('BASE_SPACING is the fixed world cell size: 100 canvas units', () => {
+        expect(BASE_SPACING).toBe(100);
     });
 
-    it('gridOffset wraps any origin position into [0, 64)', () => {
-        // Origin exactly on a line → offset 0
-        expect(gridOffset(0)).toBe(0);
-        expect(gridOffset(64)).toBe(0);
-        expect(gridOffset(-64)).toBe(0);
-        // Origin between lines → offset = origin mod 64
-        expect(gridOffset(16)).toBe(16);
-        expect(gridOffset(70)).toBe(6);
-        // Negative origins wrap forward (double-mod keeps the result positive)
-        expect(gridOffset(-16)).toBe(48);
-        // -1000400 = −15632×64 + 48 → the line at-or-before it sits 48px back
-        expect(gridOffset(-1000400)).toBe(48);
+    it('gridScreenSpacing = BASE_SPACING × scale (zoom grows/shrinks cells)', () => {
+        // At scale 1 the 100-unit cells render at 100px
+        expect(gridScreenSpacing(1)).toBe(100);
+        // Zoom in ×2 → cells grow to 200px
+        expect(gridScreenSpacing(2)).toBe(200);
+        // Zoom out ×0.5 → cells shrink to 50px
+        expect(gridScreenSpacing(0.5)).toBe(50);
+        // One wheel notch ×1.2 → 120px cells
+        expect(gridScreenSpacing(1.2)).toBeCloseTo(120, 10);
     });
 
-    it('gridLineCount is bounded by the viewport size (+1 boundary line)', () => {
-        expect(gridLineCount(800)).toBe(14); // ceil(800/64)=12.5→13, +1 = 14
-        expect(gridLineCount(600)).toBe(11); // ceil(600/64)=9.375→10, +1 = 11
-        expect(gridLineCount(0)).toBe(1);
-        expect(gridLineCount(64)).toBe(2);
+    it('gridLineCount is bounded by the viewport ÷ spacing (+1 boundary line)', () => {
+        expect(gridLineCount(800, 100)).toBe(9); // ceil(800/100)=8, +1 = 9
+        expect(gridLineCount(600, 100)).toBe(7); // ceil(600/100)=6, +1 = 7
+        expect(gridLineCount(800, 200)).toBe(5); // zoomed in → fewer lines
+        expect(gridLineCount(800, 50)).toBe(17); // zoomed out → more lines
     });
 });
 

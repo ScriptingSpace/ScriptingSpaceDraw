@@ -22,22 +22,30 @@
 // (SCALE_MAX = 1e300, SCALE_MIN = 1e-300) purely to keep arithmetic + the
 // exponent display finite — no user reaches them.
 //
-// GRID — ONE SIZE, ALWAYS (user contract: "the grid should be one size, and
-// I can scroll freely without the grid repeating in size"): the grid is
-// drawn at a CONSTANT screen spacing (GRID_SCREEN_SPACING = 64px) regardless
-// of zoom. There is NO level ladder, NO cross-fade, NO re-leveling: the grid
-// never changes size, it only slides (its offset follows the world origin's
-// screen position, so panning moves the grid and zooming keeps it one size).
-// The world anchoring means the origin always sits on a grid intersection.
+// GRID — WORLD-ANCHORED, FIXED WORLD SIZE (user contract: "the grid size is
+// fixed, like 100px, and zooming in and out would shrink or grow these like
+// it normally would"): each grid cell represents a FIXED world size of
+// BASE_SPACING = 100 canvas units. On screen the spacing is
+// BASE_SPACING × scale — zooming IN grows the cells, zooming OUT shrinks
+// them, exactly like a normal canvas app. The lines are world-anchored:
+// they sit at world coordinates that are multiples of 100, so panning slides
+// the grid and zooming scales it. The world origin (0, 0) always sits on a
+// grid intersection.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // The transform itself — see the module header for the coordinate contract
 export type CanvasTransform = { x: number; y: number; scale: number };
 
-// GRID_SCREEN_SPACING — the ONE grid size: constant screen pixels between
-// grid lines at every zoom level. The grid is a fixed-size screen texture
-// anchored to the world origin (see GridLayer.tsx).
-export const GRID_SCREEN_SPACING = 64;
+// BASE_SPACING — the FIXED WORLD SIZE of one grid cell: 100 canvas units.
+// Every grid line sits at a world coordinate that is a multiple of this, at
+// every zoom level. On screen the cells render at BASE_SPACING × scale px.
+export const BASE_SPACING = 100;
+
+// MIN_SCREEN_SPACING — grid lines closer together than this (in screen px)
+// are not drawn: below ~2px the lines merge into solid gray noise and the
+// line count would explode toward the DOM limit. This only happens at
+// extreme zoom-OUT (scale < 0.02); the grid fades out gracefully there.
+export const MIN_SCREEN_SPACING = 2;
 
 // Practical float-edge scale clamps — see the module header. NOT product
 // limits: they sit ~57 orders of magnitude inside the IEEE-754 double wall
@@ -114,19 +122,16 @@ export const applyPan = (
     y: transform.y - dy * DRAG_PAN_FACTOR,
 });
 
-// gridOffset — the screen-space position of the FIRST grid line at or before
-// screen coordinate `originScreen` (the world origin's projection). Always in
-// [0, GRID_SCREEN_SPACING): the double-mod keeps negative origins positive.
-// The grid is ONE size — this offset is the only thing that changes as the
-// user pans/zooms (the lines slide, never resize).
-export const gridOffset = (originScreen: number): number =>
-    ((originScreen % GRID_SCREEN_SPACING) + GRID_SCREEN_SPACING) % GRID_SCREEN_SPACING;
+// gridScreenSpacing — the on-screen size of one grid cell at the given
+// scale: BASE_SPACING world units × scale px/unit. Zoom in → bigger cells;
+// zoom out → smaller cells (the world-anchored contract).
+export const gridScreenSpacing = (scale: number): number => BASE_SPACING * scale;
 
 // gridLineCount — how many grid lines fit across a viewport of `size` px at
-// the constant GRID_SCREEN_SPACING (+1 for the boundary line). Bounded by the
-// viewport — the "infinite" plane never grows the DOM.
-export const gridLineCount = (size: number): number =>
-    Math.ceil(size / GRID_SCREEN_SPACING) + 1;
+// the given screen spacing (+1 for the boundary line). Bounded by the
+// viewport ÷ spacing — the "infinite" plane never grows the DOM.
+export const gridLineCount = (size: number, screenSpacing: number): number =>
+    Math.ceil(size / screenSpacing) + 1;
 
 // normalizeWheelFactor — wheel deltas arrive in wildly different units per
 // browser/device (pixel-mode trackpads fire many small deltas; line-mode
