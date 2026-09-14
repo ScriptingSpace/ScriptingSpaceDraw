@@ -1,0 +1,25 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        // Flatten output: src/index.ts → lib/index.js (matches the "main" /
+        // "exports" entry points in package.json)
+        "rootDir": "src"
+    },
+    // Library build config — emits JS + .d.ts for src/index.ts (the public
+    // barrel) and everything it reaches into lib/. App-only code (main.tsx,
+    // app.css side-effect import), root-level vite/vitest configs and tests
+    // are excluded so the published surface is exactly the package's exports.
+    "exclude": [
+        "node_modules",
+        "src/main.tsx",
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "**/*.spec.ts",
+        "**/*.spec.tsx",
+        "vite.config.ts",
+        "vitest.config.ts",
+        "index.ts",
+        "**/dist/*",
+        "**/lib/*"
+    ]
+}

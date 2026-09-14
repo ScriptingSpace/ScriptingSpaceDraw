@@ -1,0 +1,80 @@
+# Deploys the Draw Dashboard to GitHub Pages on every push to main.
+#
+# Repo layout notes:
+# - This is a STANDALONE repo (not the noobscript monorepo). @presource/core
+#   and @presource/react are pulled from the npm registry (see package.json).
+#   @presource/react must be published first — use the publish-presource
+#   workflow in the NQQT/noobscript monorepo (needs the NPM_TOKEN secret).
+# - vite.config.ts uses base: './' so the built bundle works at the Pages URL
+#   root (https://scriptingspace.github.io/ScriptingSpaceDraw/).
+#
+# One-time repo setting (required once, not per-deploy):
+#   Settings → Pages → Build and deployment → Source: "GitHub Actions"
+
+name: Deploy GitHub Pages
+
+on:
+    push:
+        branches: [main]
+    # Manual re-deploys from the Actions tab
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    pages: write
+    id-token: write
+
+# One deploy at a time; new pushes cancel in-flight deploys
+concurrency:
+    group: pages
+    cancel-in-progress: true
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Setup Node
+              uses: actions/setup-node@v5
+              with:
+                  node-version: 24
+
+            # Plain install (no --frozen-lockfile): the lockfile is generated
+            # in CI until it is committed after the first successful install
+            - name: Install dependencies
+              run: yarn install
+
+            - name: Test
+              run: yarn test
+
+            - name: Typecheck
+              run: yarn typecheck
+
+            - name: Build
+              run: yarn build
+
+            # Also compile the npm library build (lib/) so the publishable
+            # output (everything exported from src/index.ts) is verified in CI
+            - name: Build library
+              run: yarn build:lib
+
+            - name: Configure Pages
+              uses: actions/configure-pages@v5
+
+            - name: Upload artifact
+              uses: actions/upload-pages-artifact@v3
+              with:
+                  path: dist
+
+    deploy:
+        runs-on: ubuntu-latest
+        needs: build
+        environment:
+            name: github-pages
+            url: ${{ steps.deployment.outputs.page_url }}
+        steps:
+            - name: Deploy to GitHub Pages
+              id: deployment
+              uses: actions/deploy-pages@v4

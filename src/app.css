@@ -1,0 +1,32 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   @scripting-space/draw — global stylesheet.
+
+   VIEWPORT LOCK: the dashboard is a fixed, app-like surface — exactly
+   100vh × 100vw with zero white padding around it. The browser's default
+   body margin (8px) is removed, and overflow is locked on the html/body
+   chain so NO window-level scrollbar ever appears (the canvas fills the
+   viewport and owns all interaction — see CanvasSurface in
+   src/dashboards/DrawDashboard.tsx).
+   ───────────────────────────────────────────────────────────────────────────── */
+
+html,
+body,
+#root {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+body {
+    /* Blue-violet dark (Tokyo Night Storm bg) — matches PALETTE_BACKGROUND
+       in src/functions/palette.ts; CSS here stays raw since the dashboard
+       root overrides it anyway (kept in sync manually) */
+    background: #24283b;
+    color: #a9b1d6;
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+        sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+}

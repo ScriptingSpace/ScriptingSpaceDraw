@@ -1,0 +1,18 @@
+# Dependencies — never commit these
+node_modules/
+
+# Build output
+dist/
+lib/
+
+# Vite / vitest local caches
+.vite/
+.vite-temp/
+
+# Turbo local caches and run logs (matches the root repo's .turbo ignore)
+.turbo
+
+# Environment / OS noise
+.env
+.DS_Store
+Thumbs.db
