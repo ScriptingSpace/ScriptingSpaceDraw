@@ -1,15 +1,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // REMOVABLE feature plugin: DRAG TO PAN — grab-the-paper panning.
 //
-// Consumes the pointer core plugin's drag state (dragLast/dragButton) and
-// the keyboard core plugin's held-key set to implement the pan gestures:
-// - Plain left-drag on empty canvas → pan (the "drag anywhere to look
-//   around" default) — ONLY when no tool is active (a tool owns left-drag
-//   for drawing; cross-reference: toolRouterPlugin)
-// - Space held + any-button drag → pan (power users)
+// BUTTON MAP (user contract: "fix up the drag, so it is right mouse click
+// instead of left. Left are for tool usage unless no tool is selected"):
+// - RIGHT-button drag → pan (the dedicated pan gesture — always pans,
+//   regardless of tool state; the context menu is suppressed on the canvas
+//   so the drag stays clean)
+// - LEFT-button drag → TOOL usage when a tool is active (the tool router
+//   owns it); when NO tool is active, left-drag pans (the "drag anywhere
+//   to look around" default)
 // - Middle-button drag → pan
-// - Right-button drag without space → NOT a pan (context menu stays
-//   available)
+// - Space held + any-button drag → pan (power-user override — space+left
+//   pans even with a tool active)
 // - Drag starting inside a `[data-hud]` subtree → belongs to the HUD (the
 //   pointer plugin never records a drag there — cross-reference:
 //   core/pointerPlugin.ts)
@@ -40,15 +42,21 @@ export const dragToPanPlugin = mountOf(
         // the gesture policy (the contract table in the header)
         const mayPan = (button: number | null): boolean => {
             if (button === null) return false;
+            // An active NODE ADJUSTMENT drag owns the canvas (the node
+            // editor grabbed the pointer near a shape handle) — pan yields
+            // in every mode while it runs
+            if (context.drawing().adjusting) return false;
             // Space held → any button pans (power-user override)
             if (context.keyboard().held.has('Space')) return true;
-            // A TOOL OWNS THE LEFT DRAG while it is active: when a tool is
-            // selected (and it draws with left-drag), left-drag means DRAW,
-            // not pan. Middle-drag still pans (the tool only claims left).
-            const toolActive = context.activeTool() !== null;
-            if (toolActive && button === 0) return false;
-            // Plain left-drag (the default look-around) or middle-drag
-            return button === 0 || button === 1;
+            // RIGHT button = the dedicated pan drag — always pans
+            if (button === 2) return true;
+            // MIDDLE button pans
+            if (button === 1) return true;
+            // LEFT button: a tool owns it for drawing while active; with no
+            // tool selected left-drag pans (the default look-around)
+            if (button === 0) return context.activeTool() === null;
+            // Any other button never pans
+            return false;
         };
 
         // pointerdown fires AFTER the core plugin's listener (registration
@@ -59,11 +67,15 @@ export const dragToPanPlugin = mountOf(
             const state = context.pointer() as DrawPointerState;
             if (!state || state.dragButton === null) return;
             if (!mayPan(state.dragButton)) return;
-            // Never capture the pointer when a tool owns the drag (the tool
-            // router drives the drawing; capture is pan-only)
-            if (context.activeTool() !== null && state.dragButton === 0) return;
             // Capture the pointer so the drag continues outside the canvas
             (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
+        };
+
+        // Right-click on the canvas must not open the context menu — the
+        // right button IS the pan drag now (suppress on the surface only;
+        // HUD elements keep their own menus)
+        const handleContextMenu = (event: MouseEvent) => {
+            event.preventDefault();
         };
 
         const handlePointerMove = (event: PointerEvent) => {
@@ -108,12 +120,14 @@ export const dragToPanPlugin = mountOf(
         // pointerleave also ends the drag (the core plugin clears state on
         // leave; this keeps the interpreter consistent)
         surface.addEventListener('pointerleave', endDrag);
+        surface.addEventListener('contextmenu', handleContextMenu);
 
         return () => {
             surface.removeEventListener('pointerdown', handlePointerDown);
             surface.removeEventListener('pointermove', handlePointerMove);
             surface.removeEventListener('pointerup', handlePointerUp);
             surface.removeEventListener('pointerleave', endDrag);
+            surface.removeEventListener('contextmenu', handleContextMenu);
         };
     },
 ) satisfies DrawPlugin;

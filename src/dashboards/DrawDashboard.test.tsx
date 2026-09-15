@@ -335,7 +335,7 @@ describe('DrawDashboard — panning', () => {
         expect(readOriginCross()).toEqual({ x: 400, y: 300 });
     });
 
-    it('ignores right-button drag without space (context menu stays available)', () => {
+    it('pans with RIGHT-button drag (the dedicated pan gesture)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
@@ -343,7 +343,22 @@ describe('DrawDashboard — panning', () => {
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 250 });
         fireEvent.pointerUp(surface, {});
 
-        expect(readOriginCross()).toEqual({ x: 400, y: 300 });
+        // Paper follows the hand → origin moves +100/+50: (400,300) → (500, 350)
+        expect(readOriginCross()).toEqual({ x: 500, y: 350 });
+    });
+
+    it('suppresses the context menu on the canvas (right button is the pan drag)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // The contextmenu event must be preventDefault-ed on the canvas
+        let defaultPrevented = false;
+        const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+        surface.addEventListener('contextmenu', () => {
+            defaultPrevented = event.defaultPrevented;
+        });
+        fireEvent(surface, event);
+        expect(defaultPrevented).toBe(true);
     });
 
     it('stops panning when the pointer leaves the surface', () => {

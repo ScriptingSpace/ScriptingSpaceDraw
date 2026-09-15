@@ -36,11 +36,12 @@ import {
     panOnWheelPlugin,
     dragToPanPlugin,
     toolbarPlugin,
-    toolRouterPlugin,
-    penToolPlugin,
+    colorPalettePlugin,
     circleToolPlugin,
     rectangleToolPlugin,
     lineToolPlugin,
+    nodeEditorPlugin,
+    toolRouterPlugin,
     drawingLayerPlugin,
 } from '../plugins';
 import { createDrawingState } from '../plugins/core/DrawPluginContext';
@@ -87,6 +88,17 @@ import { createDrawingState } from '../plugins/core/DrawPluginContext';
 //     zoomOnWheelPlugin     — vertical wheel → zoom at pointer
 //     panOnWheelPlugin      — horizontal wheel → pan left/right
 //     dragToPanPlugin       — drag gestures → grab-the-paper pan
+//     toolbarPlugin         — bottom-center tool buttons (tool-agnostic)
+//     colorPalettePlugin    — right-side stroke palette (while a tool is
+//                             armed; writes context.drawing().color)
+//     …tool plugins         — circle / rectangle / line (curve) — all
+//                             grid-locked ("This isn't free form")
+//     nodeEditorPlugin      — shape node handles + click-drag adjustment
+//                             (registers BEFORE tool-router so a node grab
+//                             can swallow the press via
+//                             stopImmediatePropagation)
+//     toolRouterPlugin      — routes pointer events to the active tool
+//     drawingLayerPlugin    — renders committed shapes + the live draft
 //
 // LAYOUT (unchanged contract): the canvas fills the ENTIRE viewport. No
 // header, no footer. POINTER MATH: viewport-relative pixels via
@@ -117,17 +129,22 @@ const DashboardRoot = styledComponent('div', {
 // Ref-forwarding cast: the styledComponent return type (React.FC) lacks
 // `ref` — Emotion forwards it at runtime (same cast pattern documented in
 // the presource styledComponent notes).
-const CanvasSurface = styledComponent('div', {
-    position: 'absolute' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    overflow: 'hidden' as const,
-    // grab by default (plain left-drag pans via dragToPanPlugin)
-    cursor: 'grab',
-}) as unknown as React.FC<
-    React.HTMLAttributes<HTMLDivElement> & {
+const CanvasSurface = styledComponent<{ toolArmed: boolean }>(
+    'div',
+    {
+        position: 'absolute' as const,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        overflow: 'hidden' as const,
+        // Cursor reflects the button map: crosshair while a tool is armed
+        // (left-drag draws), grab when no tool is active (left-drag pans —
+        // and right-drag always pans)
+        cursor: ({ toolArmed }) => (toolArmed ? 'crosshair' : 'grab'),
+    },
+) as unknown as React.FC<
+    { toolArmed: boolean } & React.HTMLAttributes<HTMLDivElement> & {
         ref?: React.Ref<HTMLDivElement>;
     }
 >;
@@ -157,8 +174,11 @@ const registerCorePlugins = (api: DrawPluginApi) => {
 // REGISTRATION ORDER MATTERS for plugins reading fresh input state on the
 // same event (listeners fire in registration order):
 //   grid/HUDs/title (render-only) → wheel/pan gestures → drag-to-pan →
-//   TOOLBAR (renders the tool buttons) → TOOL PLUGINS (register their tool
-//   definitions BEFORE the router mounts) → tool router → drawing layer.
+//   TOOLBAR (renders the tool buttons) → COLOR PALETTE (right-side swatches,
+//   appears while a tool is armed) → TOOL PLUGINS (register their tool
+//   definitions BEFORE the router mounts) → NODE EDITOR (grabs node drags
+//   before the router — listener order = registration order) → tool router
+//   → drawing layer.
 const registerDefaultPlugins = (api: DrawPluginApi) => {
     api.register('grid', gridPlugin);
     api.register('coordinate-hud', coordinateHudPlugin);
@@ -168,13 +188,18 @@ const registerDefaultPlugins = (api: DrawPluginApi) => {
     api.register('pan-on-wheel', panOnWheelPlugin);
     api.register('drag-to-pan', dragToPanPlugin);
     // Tool system: toolbar (tool-agnostic UI) → tools (register into
-    // context.tools) → router (routes pointer events to the active tool)
-    // → drawing layer (renders committed shapes + the live draft)
+    // context.tools) → node editor (shape node handles + adjustment; grabs
+    // node presses BEFORE the router) → router (routes pointer events to
+    // the active tool) → drawing layer (renders committed shapes + the
+    // live draft)
     api.register('toolbar', toolbarPlugin);
-    api.register('pen-tool', penToolPlugin);
+    // The stroke-color palette — writes context.drawing().color; reads the
+    // swatch list through context.palette (color-agnostic render)
+    api.register('color-palette', colorPalettePlugin);
     api.register('circle-tool', circleToolPlugin);
     api.register('rectangle-tool', rectangleToolPlugin);
     api.register('line-tool', lineToolPlugin);
+    api.register('node-editor', nodeEditorPlugin);
     api.register('tool-router', toolRouterPlugin);
     api.register('drawing-layer', drawingLayerPlugin);
 };
@@ -324,7 +349,13 @@ export const DrawDashboard = React.memo(() => {
 
     return (
         <DashboardRoot data-testid="dashboard-root">
-            <CanvasSurface ref={handleSurfaceRef} data-testid="canvas-surface">
+            {/* toolArmed drives the cursor: crosshair while a tool is
+                selected (left-drag draws), grab when idle (left-drag pans) */}
+            <CanvasSurface
+                ref={handleSurfaceRef}
+                toolArmed={activeTool() !== null}
+                data-testid="canvas-surface"
+            >
                 {/* Every plugin's UI node, collected by the execution loop.
                     The order is registration order: grid → HUDs → title. */}
                 {pluginNodes.map((node, index) => (

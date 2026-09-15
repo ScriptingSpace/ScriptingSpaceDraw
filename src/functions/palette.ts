@@ -36,6 +36,8 @@ export const PALETTE_CYAN = '#7dcfff';
 export const PALETTE_GREEN = '#9ece6a';
 // Gold yellow #e0af68 (S 79%, L 64%) — badges
 export const PALETTE_GOLD = '#e0af68';
+// Red #f7768e (the tokyonight red — storm flavor). Stroke swatch.
+export const PALETTE_RED = '#f7768e';
 
 // Text colors
 export const PALETTE_TEXT_BRIGHT = '#c0caf5'; // headings, active text
@@ -45,6 +47,22 @@ export const PALETTE_TEXT_FAINT = '#565f89'; // decorative hints (comment)
 
 // Overlay scrim (Night bg at high alpha)
 export const PALETTE_SCRIM = 'rgba(26, 27, 38, 0.78)';
+
+// DRAW_COLOR_SWATCHES — the stroke colors the right-side palette exposes
+// (the colorPalettePlugin renders one swatch per entry). Rainbow order —
+// red → orange → yellow → green → cyan → blue → purple → white. Every hex
+// is a verified tokyonight storm token, all AA-contrast on the deep well
+// background (#1a1b26), so a stroke in ANY swatch is always visible.
+export const DRAW_COLOR_SWATCHES: string[] = [
+    PALETTE_RED, // #f7768e
+    PALETTE_TERTIARY, // #ff9e64
+    PALETTE_GOLD, // #e0af68
+    PALETTE_GREEN, // #9ece6a
+    PALETTE_CYAN, // #7dcfff
+    PALETTE_ACCENT, // #7aa2f7 (the default stroke color)
+    PALETTE_SECONDARY, // #bb9af7
+    PALETTE_TEXT_BRIGHT, // #c0caf5 (near-white pencil ink)
+];
 
 // DrawPalette — the aggregated token bundle passed to plugins through the
 // DrawPluginContext (see ../plugins/core/DrawPluginContext.ts). Plugins read
@@ -63,11 +81,15 @@ export type DrawPalette = {
     cyan: string;
     green: string;
     gold: string;
+    red: string;
     textBright: string;
     textBody: string;
     textMuted: string;
     textFaint: string;
     scrim: string;
+    // The stroke swatch colors (the right-side palette's entries — the
+    // colorPalettePlugin reads them through the context)
+    swatches: string[];
 };
 
 // drawPalette — the singleton bundle built from the constants above (the
@@ -85,9 +107,11 @@ export const drawPalette: DrawPalette = {
     cyan: PALETTE_CYAN,
     green: PALETTE_GREEN,
     gold: PALETTE_GOLD,
+    red: PALETTE_RED,
     textBright: PALETTE_TEXT_BRIGHT,
     textBody: PALETTE_TEXT_BODY,
     textMuted: PALETTE_TEXT_MUTED,
     textFaint: PALETTE_TEXT_FAINT,
     scrim: PALETTE_SCRIM,
+    swatches: DRAW_COLOR_SWATCHES,
 };

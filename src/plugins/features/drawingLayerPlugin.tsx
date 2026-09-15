@@ -6,33 +6,55 @@
 // (context.drawing().draft) from world space to screen space (shapeToScreen)
 // and returns one SVG covering the viewport.
 //
-// The DRAFT renders with a dashed accent stroke (the live preview look);
-// committed shapes render with the solid text color. Shapes are world-
-// anchored: panning slides them, zooming scales them (same contract as the
-// grid).
+// STROKE COLORS (the "I'm not seeing anything" bug): strokes previously
+// rendered through `var(--draw-shape-line)` / `var(--draw-shape-draft)` —
+// CSS variables that were NEVER DEFINED anywhere, so every stroke collapsed
+// to the SVG `stroke` initial value (`none`) → invisible drawings. Now the
+// layer colors directly from the palette:
+// - COMMITTED shapes render in their stamped creation-time `color`
+//   (shapes carry the hex stamped by the tool plugins at draft time); a
+//   shape without one falls back to the solid text ink (the pre-palette
+//   look for legacy shapes).
+// - The DRAFT renders dashed in the shape's stamped color (its creation
+//   ink), falling back to the ACTIVE swatch (context.drawing().color) —
+//   the live preview always shows the exact color it will commit as.
+//
+// SHAPE SET: curve (quadratic Bézier `M…Q…` — the Line tool), circle, rect
+// (functions/shapes.ts — "circle, rectangle, line more like curve"; the
+// freehand path shape was REMOVED per the grid contract).
+//
+// Shapes are world-anchored: panning slides them, zooming scales them (same
+// contract as the grid). The node adjustment handles render in
+// nodeEditorPlugin (separate overlay above this layer).
 //
 // REMOVABLE: removing it hides all drawings (the shapes stay in the state —
 // re-adding the plugin brings them back).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
-import { shapeToScreen } from '../../functions/shapes';
+import { shapeToScreen, shapeInk } from '../../functions/shapes';
 import type { DrawShape } from '../../functions/shapes';
 import { mountOf } from '../core/DrawPluginRegistry';
 import type { DrawPlugin, DrawPluginContext } from '../core';
 
 // Renders ONE projected shape as an SVG element. Committed strokes are
-// solid; the draft (dashed = true) renders with a dashed accent stroke.
+// solid in the shape's own (stamped) ink; the draft (dashed = true) renders
+// with a dashed stroke in its live ink.
 const ShapeElement = ({
     shape,
+    color,
     dashed,
 }: {
     shape: DrawShape; // already projected to screen space
+    color: string; // resolved stroke ink (palette token hex)
     dashed: boolean;
 }): React.ReactElement | null => {
-    // Common stroke attributes — dashed only for the live draft
+    // Common stroke attributes — dashed only for the live draft. The stroke
+    // is a direct palette hex — NOT a var() (see header: undefined custom
+    // properties collapse the declaration to `stroke: none` and hide the
+    // drawing entirely).
     const strokeProps = {
-        stroke: dashed ? 'var(--draw-shape-draft)' : 'var(--draw-shape-line)',
+        stroke: color,
         strokeWidth: 2,
         strokeLinecap: 'round' as const,
         strokeLinejoin: 'round' as const,
@@ -40,12 +62,13 @@ const ShapeElement = ({
         ...(dashed ? { strokeDasharray: '6 4' } : {}),
     };
     switch (shape.kind) {
-        case 'path':
-            // A polyline — skip degenerate single-point paths
-            if (shape.points.length < 2) return null;
+        case 'curve':
+            // Quadratic Bézier path — `control` bends the segment ("line
+            // more like curve": grid chords across multiple grid points
+            // bow instead of running sharp through them)
             return (
-                <polyline
-                    points={shape.points.map((point) => `${point.x},${point.y}`).join(' ')}
+                <path
+                    d={`M ${shape.start.x} ${shape.start.y} Q ${shape.control.x} ${shape.control.y} ${shape.end.x} ${shape.end.y}`}
                     {...strokeProps}
                 />
             );
@@ -62,16 +85,6 @@ const ShapeElement = ({
             if (width <= 0 || height <= 0) return null;
             return <rect x={x} y={y} width={width} height={height} {...strokeProps} />;
         }
-        case 'line':
-            return (
-                <line
-                    x1={shape.start.x}
-                    y1={shape.start.y}
-                    x2={shape.end.x}
-                    y2={shape.end.y}
-                    {...strokeProps}
-                />
-            );
     }
 };
 
@@ -86,6 +99,11 @@ export const drawingLayerPlugin = mountOf(
         const shapes = drawing?.shapes ?? [];
         const draft = drawing?.draft ?? null;
         if (shapes.length === 0 && !draft) return null;
+
+        // The ACTIVE ink (the palette swatch) — the draft fallback when its
+        // shape carries no stamped color. Exit-hatch default: the palette's
+        // primary accent (same token scale as the swatch list).
+        const activeColor = drawing?.color ?? context.palette.accent;
 
         return (
             <svg
@@ -102,17 +120,33 @@ export const drawingLayerPlugin = mountOf(
                     pointerEvents: 'none',
                 }}
             >
-                {/* Committed shapes — world-anchored, projected per pass */}
-                {shapes.map((shape, index) => (
-                    <ShapeElement
-                        key={index}
-                        shape={shapeToScreen(shape, transform)}
-                        dashed={false}
-                    />
-                ))}
-                {/* The live draft — dashed accent preview */}
+                {/* Committed shapes — world-anchored, projected per pass.
+                    Each renders in its CREATION-TIME stamped color; legacy
+                    shapes without a stamp keep the solid text ink. The
+                    resolution lives in shapeInk — the node editor reads the
+                    SAME ink so handle dots match their stroke. */}
+                {shapes.map((shape, index) => {
+                    // Project once — the projection carries the stamped
+                    // color through (shapeToScreen passes metadata)
+                    const projected = shapeToScreen(shape, transform);
+                    return (
+                        <ShapeElement
+                            key={index}
+                            shape={projected}
+                            color={shapeInk(shape, context.palette.textBody)}
+                            dashed={false}
+                        />
+                    );
+                })}
+                {/* The live draft — dashed preview in its creation ink (the
+                    active swatch at drag time), falling back to the current
+                    active ink */}
                 {draft ? (
-                    <ShapeElement shape={shapeToScreen(draft, transform)} dashed />
+                    <ShapeElement
+                        shape={shapeToScreen(draft, transform)}
+                        color={draft.color ?? activeColor}
+                        dashed
+                    />
                 ) : null}
             </svg>
         );

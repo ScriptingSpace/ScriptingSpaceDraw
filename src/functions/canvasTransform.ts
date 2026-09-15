@@ -146,6 +146,45 @@ export const gridScreenSpacing = (scale: number): number => BASE_SPACING * scale
 export const gridLineCount = (size: number, screenSpacing: number): number =>
     Math.ceil(size / screenSpacing) + 1;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GRID SNAPPING (user contract: "This isn't free form, it is according the
+// grid. All Circle, Rectangle and Lines must snapped to the grid points.")
+//
+// A "grid point" is any world intersection (x, y) with x ≡ y ≡ 0
+// (mod BASE_SPACING) — the same lattice the grid renderer draws. All tool
+// geometry (circle centers/radii, rect corners, curve anchors/controls) and
+// all node adjustments snap through snapToGrid, so every drawn vertex LANDS
+// on a visible grid intersection at every zoom level.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// snapping helper — one coordinate to the nearest grid line (multiple of
+// `spacing`). Math.round ties (.5) go UP (JS convention) — deterministic.
+// The ternary normalizes the −0 edge (Math.round can return −0 for small
+// negatives; shape state must never carry −0 — toEqual distinguishes it).
+export const snapToGridAxis = (value: number, spacing: number = BASE_SPACING): number => {
+    const snapped = Math.round(value / spacing) * spacing;
+    return snapped === 0 ? 0 : snapped;
+};
+
+// snapToGrid — a world point → the nearest grid-point lattice intersection
+export const snapToGrid = (
+    point: { x: number; y: number },
+    spacing: number = BASE_SPACING,
+): { x: number; y: number } => ({
+    x: snapToGridAxis(point.x, spacing),
+    y: snapToGridAxis(point.y, spacing),
+});
+
+// gridSteps — how many grid CELLS a snapped axis delta spans (Chebyshev:
+// the count along the longer axis — a (200, 200) delta and a (200, 0) delta
+// both span 2 steps). Assumes snapped deltas (multiples of spacing) — the
+// round() absorbs float drift.
+export const gridSteps = (
+    dx: number,
+    dy: number,
+    spacing: number = BASE_SPACING,
+): number => Math.round(Math.max(Math.abs(dx), Math.abs(dy)) / spacing);
+
 // normalizeWheelFactor — wheel deltas arrive in wildly different units per
 // browser/device (pixel-mode trackpads fire many small deltas; line-mode
 // mice fire ~100px or ~3-line notches). This normalizes ANY incoming delta

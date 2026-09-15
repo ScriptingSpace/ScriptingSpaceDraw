@@ -9,14 +9,19 @@
 //   ACTIVE tool's handlers (from context.tools), converting screen points
 //   to world coordinates with screenToCanvas.
 //
+// BUTTON MAP (user contract: "Left are for tool usage unless no tool is
+// selected"): ONLY the left button draws, and only when a tool is active.
+// Right-drag pans (the dedicated pan gesture — cross-reference:
+// dragToPanPlugin), middle-drag pans, space+drag pans.
+//
 // PHASE MAPPING (driven by the pointer state written by the core plugin):
 // - pointerdown (drag starts, dragButton set) → tool.onDragStart(worldPoint)
 // - pointermove (drawing === true)             → tool.onDragMove(current)
 // - pointerup (drawing ends)                   → tool.onDragEnd(lastCursor)
 //
 // The router owns the `drawing` flag in the drawing state: it flips it on
-// at drag start and off at drag end. The dragToPanPlugin reads that flag to
-// yield left-drag to the tool.
+// at drag start and off at drag end. The dragToPanPlugin reads the ACTIVE
+// TOOL (not this flag) to yield left-drag to the tool.
 //
 // TOOL SHORTCUTS: tools can declare a keyboard `shortcut` (event.code). The
 // router listens for keydown on window and activates the matching tool —
@@ -62,12 +67,17 @@ export const toolRouterPlugin = mountOf(
         const handlePointerDown = (event: PointerEvent) => {
             const tool = activeTool();
             if (!tool) return;
-            // Only the left button draws (right/middle stay pan/menu)
+            // ONLY the left button draws (right = pan, middle = pan)
             if (event.button !== 0) return;
             // SPACE = the pan override (cross-reference: dragToPanPlugin's
             // mayPan policy): space+drag must pan even with a tool active,
             // so the router never starts a drawing drag while space is held
             if (context.keyboard().held.has('Space')) return;
+            // A NODE ADJUSTMENT drag owns the pointer (nodeEditorPlugin
+            // grabbed a shape handle and already swallowed this press —
+            // this guard is the belt for any plugin registered BEFORE the
+            // editor): never start a drawing drag while it runs
+            if (context.drawing().adjusting) return;
             // Presses on HUD subtrees never draw (toolbar buttons etc.)
             const target = event.target as HTMLElement | null;
             if (target?.closest?.('[data-hud]')) return;
@@ -75,6 +85,9 @@ export const toolRouterPlugin = mountOf(
             // Mark the drawing drag active (dragToPanPlugin yields left-drag)
             const drawingState = context.drawing();
             context.drawing({ ...drawingState, drawing: true });
+            // Capture the pointer so the tool drag continues outside the
+            // canvas bounds (mirrors the pan gesture's capture)
+            (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
             tool.handlers.onDragStart?.(world);
         };
 
@@ -86,8 +99,8 @@ export const toolRouterPlugin = mountOf(
             if (!state.drawing) return;
             const world = toWorld(event);
             // The router passes the current pointer world point; each tool
-            // tracks its own anchor (the pen appends points; shapes read
-            // their draft's center/start corner)
+            // tracks its own anchor (shape tools read their draft's center /
+            // start corner — the geometry lives in functions/shapes.ts)
             tool.handlers.onDragMove?.(world);
         };
 
@@ -112,9 +125,22 @@ export const toolRouterPlugin = mountOf(
             tool.handlers.onDragEnd?.(cursor ? screenToWorld(cursor) : { x: 0, y: 0 });
         };
 
+        // Safety net: if the pointer leaves the surface mid-draw (the
+        // pointerup may land on another element), end the drawing drag with
+        // the last tracked cursor so the draft is committed, not orphaned.
+        // The pointer core plugin clears the cursor on leave — a null cursor
+        // ends the drag WITHOUT calling the tool's end handler (no geometry
+        // to commit to).
+        const handlePointerLeave = () => {
+            const state = context.drawing();
+            if (!state.drawing) return;
+            context.drawing({ ...state, drawing: false, draft: null });
+        };
+
         surface.addEventListener('pointerdown', handlePointerDown);
         surface.addEventListener('pointermove', handlePointerMove);
         surface.addEventListener('pointerup', handlePointerUp);
+        surface.addEventListener('pointerleave', handlePointerLeave);
 
         // ── Tool shortcuts ──
         // keydown on window: activate the tool whose shortcut matches
@@ -131,6 +157,7 @@ export const toolRouterPlugin = mountOf(
             surface.removeEventListener('pointerdown', handlePointerDown);
             surface.removeEventListener('pointermove', handlePointerMove);
             surface.removeEventListener('pointerup', handlePointerUp);
+            surface.removeEventListener('pointerleave', handlePointerLeave);
             window.removeEventListener('keydown', handleKeyDown);
         };
     },

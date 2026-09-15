@@ -69,6 +69,10 @@ export const pointerPlugin = mountOf(
             // clickable); still record cursor, never start a drag
             const target = event.target as HTMLElement | null;
             if (target?.closest?.('[data-hud]')) return;
+            // NOTE: an active node adjustment (adjusting flag) is NOT gated
+            // here — this listener runs BEFORE the node editor on the same
+            // press (registration order), so the flag would be stale. The
+            // dragToPanPlugin's mayPan consults the flag on every MOVE.
             write({ dragLast: point, dragButton: event.button });
         };
 

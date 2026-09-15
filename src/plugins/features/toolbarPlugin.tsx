@@ -7,12 +7,12 @@
 // plugin."):
 //
 // The toolbar is TOOL-AGNOSTIC. It renders one button per tool currently
-// registered in `context.tools` — it has ZERO knowledge of pen, circle, or
-// any specific tool. With zero tools registered it renders an EMPTY pill
-// (the placeholder bar at the bottom center). Tool plugins register their
-// definitions at execution time (tool registration happens during the
-// plugin execution phase, which runs before this plugin's node is built —
-// registration order in the host decides).
+// registered in `context.tools` — it has ZERO knowledge of circle,
+// rectangle, curve, or any specific tool. With zero tools registered it
+// renders an EMPTY pill (the placeholder bar at the bottom center). Tool
+// plugins register their definitions at execution time (tool registration
+// happens during the plugin execution phase, which runs before this
+// plugin's node is built — registration order in the host decides).
 //
 // BEHAVIOR:
 // - Click a tool button → activate it (context.activeTool = tool.id).

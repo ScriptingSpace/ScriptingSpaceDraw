@@ -9,10 +9,13 @@ import {
     formatExponent,
     gridLineCount,
     gridScreenSpacing,
+    gridSteps,
     normalizeWheelFactor,
     SCALE_MAX,
     SCALE_MIN,
     screenToCanvas,
+    snapToGrid,
+    snapToGridAxis,
     WHEEL_ZOOM_FACTOR,
 } from './canvasTransform';
 
@@ -219,5 +222,33 @@ describe('canvasTransform — HUD + initial state', () => {
         expect(formatExponent(1e-300)).toBe('×1.000e-300');
         // Pathological inputs clamp instead of producing NaN text
         expect(formatExponent(Number.NaN)).toBe('×1.000e+0');
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Grid snapping — the tool geometry contract ("This isn't free form, it is
+// according the grid"): all shape anchors snap to the BASE_SPACING lattice.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('canvasTransform — grid snapping helpers', () => {
+    it('snapToGridAxis rounds one axis to the lattice (BASE_SPACING multiples)', () => {
+        expect(snapToGridAxis(83)).toBe(100);
+        expect(snapToGridAxis(49)).toBe(0);
+        expect(snapToGridAxis(50)).toBe(100); // half a cell rounds UP (+∞)
+        expect(snapToGridAxis(-50)).toBe(0); // ties round toward +∞ too
+        expect(snapToGridAxis(-49)).toBe(0); // small negatives normalize to +0
+        expect(snapToGridAxis(-137)).toBe(-100);
+        expect(snapToGridAxis(1899)).toBe(1900);
+    });
+
+    it('snapToGrid snaps both axes of a world point', () => {
+        expect(snapToGrid({ x: 83, y: 91 })).toEqual({ x: 100, y: 100 });
+        expect(snapToGrid({ x: 421.3, y: -49.7 })).toEqual({ x: 400, y: 0 });
+    });
+
+    it('gridSteps counts cells along the longer (Chebyshev) axis', () => {
+        expect(gridSteps(200, 0)).toBe(2);
+        expect(gridSteps(200, 200)).toBe(2); // diagonal counts as 2 steps
+        expect(gridSteps(0, 0)).toBe(0);
+        expect(gridSteps(-300, 150)).toBe(3);
     });
 });

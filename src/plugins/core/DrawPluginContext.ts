@@ -31,6 +31,7 @@
 
 import type { CanvasTransform } from '../../functions/canvasTransform';
 import type { DrawPalette } from '../../functions/palette';
+import { PALETTE_ACCENT } from '../../functions/palette';
 import type { DrawShape } from '../../functions/shapes';
 import type { DrawToolRegistry } from './DrawToolRegistry';
 
@@ -80,11 +81,13 @@ export const createKeyboardState = (): DrawKeyboardState => ({
     held: new Set<string>(),
 });
 
-// Drawing state — written by TOOL plugins (pen, shapes) via the tool
-// registry's interaction API, read by the drawing layer plugin.
+// Drawing state — written by TOOL plugins (circle, rectangle, curve) and by
+// the color palette plugin (color: the active swatch); read by the drawing
+// layer plugin.
 export type DrawDrawingState = {
     // All COMMITTED shapes (world coordinates — they pan/zoom with the
-    // grid). The drawing layer renders these every pass.
+    // grid). The drawing layer renders these every pass; the node editor
+    // renders their adjustment handles.
     shapes: DrawShape[];
     // The shape currently being drawn (draft) — rendered by the drawing
     // layer as a live preview while the pointer drags. Null when idle.
@@ -92,13 +95,28 @@ export type DrawDrawingState = {
     // Whether a drawing drag is in progress (the dragToPanPlugin reads this
     // to yield left-drag to the active tool)
     drawing: boolean;
+    // Whether a NODE ADJUSTMENT drag is in progress (set by
+    // nodeEditorPlugin when it claims a press on a shape's handle node).
+    // Gesture plugins (dragToPan's mayPan, toolRouter's pointerdown gate)
+    // read this to yield the left button to node dragging — in pan mode
+    // AND tool mode alike.
+    adjusting: boolean;
+    // The ACTIVE stroke color (hex from context.palette.swatches). New
+    // shapes are stamped with it at drag time (tool plugins read it when
+    // writing the draft); the committed shape keeps the creation-time ink.
+    // Written by the colorPalettePlugin's swatch buttons.
+    color: string;
 };
 
-// Initial drawing state
+// Initial drawing state — the DEFAULT ink is the palette's primary accent
+// (the palette swatch list, cross-reference: ../functions/palette.ts
+// DRAW_COLOR_SWATCHES).
 export const createDrawingState = (): DrawDrawingState => ({
     shapes: [],
     draft: null,
     drawing: false,
+    adjusting: false,
+    color: PALETTE_ACCENT,
 });
 // The context bundle itself
 export type DrawPluginContext = {
@@ -164,7 +182,9 @@ export type DrawPluginContext = {
     // Drawing state — ref-backed shape store (writes via
     // context.drawing({ ...state, shapes: [...] }) from tool plugins; the
     // drawing layer plugin reads it on every render pass). Draft/committed
-    // shapes live in world coordinates.
+    // shapes live in world coordinates. `.color` is the active stroke ink
+    // (read by the color palette plugin for its highlighted swatch and by
+    // the tool plugins when stamping new shapes).
     drawing: {
         (): DrawDrawingState;
         (value: DrawDrawingState): void;
