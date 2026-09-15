@@ -304,11 +304,41 @@ describe('DrawDashboard — panning', () => {
         expect(readOriginCross()).toEqual({ x: 350, y: 360 });
     });
 
-    it('ignores plain left-drag without space (leaves zoom to the wheel)', () => {
+    it('pans with plain left-drag on empty canvas (drag anywhere to look)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
+        // No space held, button 0 (left) — the default look-around gesture
         fireEvent.pointerDown(surface, { clientX: 300, clientY: 200, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 250 });
+        fireEvent.pointerUp(surface, {});
+
+        // Paper follows the hand → origin moves +100/+50: (400,300) → (500, 350)
+        expect(readOriginCross()).toEqual({ x: 500, y: 350 });
+        // Scale unchanged
+        expect(readHudScale()).toBe('×1.000e+0');
+    });
+
+    it('does NOT pan when the left-drag starts on the HUD (HUD stays clickable)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // The drag starts on an element inside the data-hud wrapper — the
+        // gesture belongs to the HUD, not the canvas
+        const hudPanel = screen.getByTestId('zoom-hud');
+        fireEvent.pointerDown(hudPanel, { clientX: 760, clientY: 580, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 250 });
+        fireEvent.pointerUp(surface, {});
+
+        // No pan: origin stays centered
+        expect(readOriginCross()).toEqual({ x: 400, y: 300 });
+    });
+
+    it('ignores right-button drag without space (context menu stays available)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        fireEvent.pointerDown(surface, { clientX: 300, clientY: 200, button: 2 });
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 250 });
         fireEvent.pointerUp(surface, {});
 
@@ -342,6 +372,70 @@ describe('DrawDashboard — panning', () => {
 
         // Cells are still exactly 100px after the pan
         expect(allGapsEqual(readGaps(readVerticalLineXs()), 100)).toBe(true);
+    });
+
+    it('moves the view the same VISUAL distance per hand pixel at any zoom', () => {
+        // The zoom-compensation contract: a 100px hand drag shifts the world
+        // EXACTLY 100px on screen at every zoom (grab-the-paper — the paper
+        // is glued to the hand). The CANVAS units covered differ (÷scale),
+        // but the visual speed is constant. The old un-compensated behavior
+        // would shift the world by 100 × scale px instead (172.8px zoomed
+        // in, 57.87px zoomed out) — these assertions catch that.
+        //
+        // Zoomed IN: 3 notches at the viewport center → scale 1.728, origin
+        // still at (400, 300) (center anchor). Drag 100px right → the origin
+        // cross follows the hand to exactly 500.
+        const zoomedIn = render(<DrawDashboard />);
+        const surfaceIn = stubSurfaceRect();
+        for (let index = 0; index < 3; index++) {
+            fireEvent.wheel(surfaceIn, { clientX: 400, clientY: 300, deltaY: 100 });
+        }
+        expect(readHudScale()).toBe('×1.728e+0');
+        fireEvent.pointerDown(surfaceIn, { clientX: 300, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surfaceIn, { clientX: 400, clientY: 300 });
+        fireEvent.pointerUp(surfaceIn, {});
+        expect(readOriginCross().x).toBeCloseTo(500, 9);
+        zoomedIn.unmount();
+
+        // Zoomed OUT: 3 notches at the viewport center → scale 1/1.728,
+        // origin still at (400, 300). The SAME 100px hand drag → the origin
+        // cross again lands at exactly 500 (same visual speed).
+        render(<DrawDashboard />);
+        const surfaceOut = stubSurfaceRect();
+        for (let index = 0; index < 3; index++) {
+            fireEvent.wheel(surfaceOut, { clientX: 400, clientY: 300, deltaY: -100 });
+        }
+        expect(readHudScale()).toBe('×5.787e-1');
+        fireEvent.pointerDown(surfaceOut, { clientX: 300, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surfaceOut, { clientX: 400, clientY: 300 });
+        fireEvent.pointerUp(surfaceOut, {});
+        expect(readOriginCross().x).toBeCloseTo(500, 9);
+    });
+
+    it('keeps the canvas point under the pointer pinned during a drag at zoom', () => {
+        // Zoom in 3 notches at the center: scale 1.728, pan becomes
+        // (−400/1.728, −300/1.728) (zoom-at-center solve). The canvas point
+        // under the grab cursor (300, 300) must equal the canvas point under
+        // the release cursor (400, 300) after the 100px drag.
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+        for (let index = 0; index < 3; index++) {
+            fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: 100 });
+        }
+        const scale = Math.pow(1.2, 3);
+        // Transforms derived from the zoom-at-center math (origin cross at
+        // (400, 300) → pan = (−400/scale, −300/scale))
+        const before = { x: -400 / scale, y: -300 / scale, scale };
+        const after = { x: -500 / scale, y: -300 / scale, scale };
+        const grabbed = screenToCanvas({ x: 300, y: 300 }, before);
+        const released = screenToCanvas({ x: 400, y: 300 }, after);
+        expect(released).toEqual(grabbed);
+
+        // The dashboard actually performed this drag
+        fireEvent.pointerDown(surface, { clientX: 300, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        expect(readOriginCross().x).toBeCloseTo(500, 9);
     });
 });
 

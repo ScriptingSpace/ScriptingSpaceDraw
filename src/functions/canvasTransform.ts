@@ -58,9 +58,10 @@ export const SCALE_MIN = 1e-300;
 // notch ≈ the classic "smooth" feel (the default Figma/Miro step).
 export const WHEEL_ZOOM_FACTOR = 1.2;
 
-// DRAG_PAN_FACTOR — pan pixels per pointer pixel while space-dragging /
-// middle-dragging. 1:1 (grab-the-paper feel); scale does NOT multiply drag
-// speed — the paper moves with the hand.
+// DRAG_PAN_FACTOR — screen pixels of content movement per pointer pixel
+// while dragging. 1:1 (grab-the-paper feel): the content under the hand
+// follows the pointer exactly. The ZOOM COMPENSATION (dividing the screen
+// delta by the scale) lives in applyPan — see below.
 export const DRAG_PAN_FACTOR = 1;
 
 // clampScale — enforce the float-edge bounds (and finite-ness). Defensive
@@ -109,17 +110,29 @@ export const applyZoom = (
     };
 };
 
-// applyPan — pure translate step: shift the pan by screen-space pixels
-// (dragging the paper right moves the viewport window LEFT over the canvas,
-// hence the minus sign).
+// applyPan — pure translate step for pointer dragging. `dx`/`dy` are SCREEN
+// pixels (pointer delta); they are divided by the scale to get CANVAS units
+// before shifting the pan. This is the zoom-compensation contract: the same
+// hand motion moves the view by the same VISUAL amount at every zoom —
+// at high zoom (large scale) a 100px hand drag is a tiny canvas distance
+// (the world is magnified, so content tracks the hand 1:1 on screen); at
+// low zoom (small scale) the same 100px covers a proportionally larger
+// canvas distance. Without the ÷scale, high zoom would crawl (canvas delta
+// overshoots the visual target) and low zoom would rocket (canvas delta
+// undershoots) — exactly the bug this fixes.
+//
+// Grab-the-paper invariant: the canvas point under the pointer at drag
+// start stays under the pointer for the whole drag (canvas = screen/scale
+// + pan; holding canvas(P) fixed while screen(P) moves by (dx, dy) forces
+// pan += (dx, dy)/scale).
 export const applyPan = (
     transform: CanvasTransform,
     dx: number,
     dy: number,
 ): CanvasTransform => ({
     scale: transform.scale,
-    x: transform.x - dx * DRAG_PAN_FACTOR,
-    y: transform.y - dy * DRAG_PAN_FACTOR,
+    x: transform.x - (dx * DRAG_PAN_FACTOR) / transform.scale,
+    y: transform.y - (dy * DRAG_PAN_FACTOR) / transform.scale,
 });
 
 // gridScreenSpacing — the on-screen size of one grid cell at the given

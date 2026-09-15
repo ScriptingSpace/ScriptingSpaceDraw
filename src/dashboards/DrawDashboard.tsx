@@ -35,7 +35,13 @@ import {
 // - Mouse wheel anywhere on the canvas → zoom AT THE POINTER (the canvas
 //   point under the cursor stays pinned under the cursor — see applyZoom).
 //   Unbounded in both directions (clamped only at the IEEE float edge).
-// - Space held + mouse drag, OR middle-button drag → pan (grab-the-paper).
+// - Plain left-drag on the empty canvas → pan (grab-the-paper). This is the
+//   "if not directly click on anything, drag to look around" contract: the
+//   default gesture on empty canvas space is LOOK/PAN, not selection.
+//   Space held + drag, OR middle-button drag → pan as well (power users).
+//   A left-drag that STARTS on an interactive HUD control (the ZoomHud
+//   panel — marked data-hud) does NOT pan, so HUD buttons keep their click
+//   behavior (cross-reference: ZoomHud.tsx HudPanel).
 // - "Reset view" HUD button → back to origin-centered, scale 1.
 //
 // GRID MODEL: ONE size, always (see GridLayer.tsx + GRID_SCREEN_SPACING) —
@@ -81,9 +87,9 @@ const CanvasSurface = styledComponent<{ panning: boolean }>(
         right: 0,
         bottom: 0,
         overflow: 'hidden' as const,
-        // grabbing while actively panning (the grab hint while space is held
-        // but not yet dragging comes from the HUD status line)
-        cursor: ({ panning }) => (panning ? 'grabbing' : 'default'),
+        // grab by default (the whole canvas is draggable now — plain
+        // left-drag pans), grabbing while actively panning
+        cursor: ({ panning }) => (panning ? 'grabbing' : 'grab'),
     },
 ) as unknown as React.FC<
     { panning: boolean } & React.HTMLAttributes<HTMLDivElement> & {
@@ -200,9 +206,19 @@ export const DrawDashboard = React.memo(() => {
         };
     }, []);
 
-    // ── Pointer drag → pan (space+drag or middle-button drag) ──
+    // ── Pointer drag → pan (plain left-drag, space+drag, or middle-drag) ──
+    // Plain left-drag pans ONLY when the drag starts on empty canvas (the
+    // "drag anywhere to look around" contract). If the pointer-down lands
+    // on the HUD (the ZoomHud panel subtree, marked data-hud), the gesture
+    // is left alone so HUD buttons remain clickable.
     const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-        const allowed = spaceHeld() || event.button === 1;
+        // Any drag starting on the HUD subtree belongs to the HUD, not the
+        // canvas (button clicks, future HUD drags, etc.)
+        const target = event.target as HTMLElement;
+        if (target.closest?.('[data-hud]')) return;
+        // Allowed gestures: plain left-drag (the default look-around), or
+        // the power-user variants (space+drag, middle-button drag)
+        const allowed = event.button === 0 || spaceHeld() || event.button === 1;
         if (!allowed) return;
         event.preventDefault();
         (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
@@ -260,17 +276,23 @@ export const DrawDashboard = React.memo(() => {
                     />
                 </svg>
                 {/* Floating zoom HUD (bottom-right): scientific-notation
-                    scale readout + Reset view */}
-                <ZoomHud
-                    transform={transform()}
-                    onReset={handleReset}
-                    colors={{
-                        border: PALETTE_BORDER,
-                        text: PALETTE_TEXT_FAINT,
-                        textBright: PALETTE_TEXT_BRIGHT,
-                        hover: PALETTE_SURFACE,
-                    }}
-                />
+                    scale readout + Reset view. Wrapped in a data-hud
+                    container so plain left-drag can distinguish "gesture
+                    started on the HUD" from "gesture started on empty
+                    canvas" (the HUD must stay clickable/draggable on its
+                    own terms — see handlePointerDown). */}
+                <div data-hud="zoom-hud">
+                    <ZoomHud
+                        transform={transform()}
+                        onReset={handleReset}
+                        colors={{
+                            border: PALETTE_BORDER,
+                            text: PALETTE_TEXT_FAINT,
+                            textBright: PALETTE_TEXT_BRIGHT,
+                            hover: PALETTE_SURFACE,
+                        }}
+                    />
+                </div>
             </CanvasSurface>
             {/* Floating title — top-left, click-through, above the canvas.
                 NO header bar, NO footer bar: the canvas owns the viewport. */}

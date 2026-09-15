@@ -101,7 +101,33 @@ describe('canvasTransform — zoom at pointer (pin contract)', () => {
 describe('canvasTransform — pan', () => {
     it('shifts the pan opposite to the drag direction (grab-the-paper)', () => {
         const before = { x: -400, y: -300, scale: 1 };
+        // Scale 1 → screen delta == canvas delta (÷1)
         expect(applyPan(before, 10, -5)).toEqual({ x: -410, y: -295, scale: 1 });
+    });
+
+    it('divides the drag delta by the scale (zoom-compensated pan speed)', () => {
+        // High zoom (scale 2): a 10px hand drag = 5 canvas units — the view
+        // moves the same VISUAL 10px as at any other zoom
+        expect(applyPan({ x: 0, y: 0, scale: 2 }, 10, -8)).toEqual({
+            x: -5,
+            y: 4,
+            scale: 2,
+        });
+        // Low zoom (scale 0.5): the same 10px hand drag = 20 canvas units
+        expect(applyPan({ x: 0, y: 0, scale: 0.5 }, 10, -8)).toEqual({
+            x: -20,
+            y: 16,
+            scale: 0.5,
+        });
+    });
+
+    it('keeps the canvas point under the pointer fixed during a drag (pin contract)', () => {
+        // Grab-the-paper: the world point under the hand at drag start must
+        // still be under the hand after any drag step, at any zoom
+        const start = { x: -400, y: -300, scale: 2.5 };
+        const grabbed = screenToCanvas({ x: 300, y: 210 }, start);
+        const moved = applyPan(start, 70, -40);
+        expect(screenToCanvas({ x: 370, y: 170 }, moved)).toEqual(grabbed);
     });
 
     it('panning does not touch the scale', () => {
