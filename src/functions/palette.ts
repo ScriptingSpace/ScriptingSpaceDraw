@@ -45,3 +45,49 @@ export const PALETTE_TEXT_FAINT = '#565f89'; // decorative hints (comment)
 
 // Overlay scrim (Night bg at high alpha)
 export const PALETTE_SCRIM = 'rgba(26, 27, 38, 0.78)';
+
+// DrawPalette — the aggregated token bundle passed to plugins through the
+// DrawPluginContext (see ../plugins/core/DrawPluginContext.ts). Plugins read
+// named tokens from this object instead of importing the palette module
+// directly, keeping them decoupled from the palette file itself.
+export type DrawPalette = {
+    background: string;
+    surface: string;
+    well: string;
+    border: string;
+    surfaceHover: string;
+    accent: string;
+    accentBright: string;
+    secondary: string;
+    tertiary: string;
+    cyan: string;
+    green: string;
+    gold: string;
+    textBright: string;
+    textBody: string;
+    textMuted: string;
+    textFaint: string;
+    scrim: string;
+};
+
+// drawPalette — the singleton bundle built from the constants above (the
+// values the dashboard + plugins actually consume)
+export const drawPalette: DrawPalette = {
+    background: PALETTE_BACKGROUND,
+    surface: PALETTE_SURFACE,
+    well: PALETTE_WELL,
+    border: PALETTE_BORDER,
+    surfaceHover: PALETTE_SURFACE_HOVER,
+    accent: PALETTE_ACCENT,
+    accentBright: PALETTE_ACCENT_BRIGHT,
+    secondary: PALETTE_SECONDARY,
+    tertiary: PALETTE_TERTIARY,
+    cyan: PALETTE_CYAN,
+    green: PALETTE_GREEN,
+    gold: PALETTE_GOLD,
+    textBright: PALETTE_TEXT_BRIGHT,
+    textBody: PALETTE_TEXT_BODY,
+    textMuted: PALETTE_TEXT_MUTED,
+    textFaint: PALETTE_TEXT_FAINT,
+    scrim: PALETTE_SCRIM,
+};
