@@ -9,10 +9,12 @@ import {
     applyZoom,
     createInitialTransform,
     normalizeWheelFactor,
+    screenToCanvas,
 } from '../functions/canvasTransform';
 import type { CanvasTransform } from '../functions/canvasTransform';
 import { GridLayer } from '../components/GridLayer';
 import { ZoomHud } from '../components/ZoomHud';
+import { CoordinateHud } from '../components/CoordinateHud';
 import {
     PALETTE_ACCENT,
     PALETTE_BORDER,
@@ -35,6 +37,10 @@ import {
 // - Mouse wheel anywhere on the canvas → zoom AT THE POINTER (the canvas
 //   point under the cursor stays pinned under the cursor — see applyZoom).
 //   Unbounded in both directions (clamped only at the IEEE float edge).
+// - Horizontal wheel (tilt wheel / trackpad sideways / Shift+wheel — the
+//   browser folds Shift+vertical-wheel into deltaX) → pan LEFT/RIGHT at
+//   constant VISUAL speed (same ÷scale compensation as dragging — see
+//   applyPan). deltaX never zooms.
 // - Plain left-drag on the empty canvas → pan (grab-the-paper). This is the
 //   "if not directly click on anything, drag to look around" contract: the
 //   default gesture on empty canvas space is LOOK/PAN, not selection.
@@ -126,6 +132,13 @@ export const DrawDashboard = React.memo(() => {
     const spaceHeld = useStateHook(false);
     const panning = useStateHook(false);
 
+    // Cursor position for the coordinate HUD: the viewport-relative pointer
+    // point while the pointer is over the canvas, null when it is not (the
+    // HUD hides instead of showing stale numbers). Kept in STATE (not a
+    // ref) because the HUD renders it — every pointer move re-renders the
+    // dashboard with the fresh coordinate readout.
+    const cursorPoint = useStateHook<{ x: number; y: number } | null>(null);
+
     // Refs for pointer-drag bookkeeping (no re-render on drag-move — the
     // transform state itself drives the render)
     const surfaceRef = useReferenceHook<HTMLDivElement | null>(null);
@@ -168,7 +181,7 @@ export const DrawDashboard = React.memo(() => {
         return () => window.removeEventListener('resize', measure);
     }, []);
 
-    // ── Wheel → zoom at pointer ──
+    // ── Wheel → zoom (deltaY) / horizontal pan (deltaX) ──
     // React attaches wheel as a PASSIVE listener — preventDefault would warn
     // and fail, so the listener is attached manually with { passive: false }
     // to block the browser's zoom/scroll and own the gesture.
@@ -184,6 +197,25 @@ export const DrawDashboard = React.memo(() => {
             // writes the argument straight into the reference). Read-then-
             // write instead: the handle identity is stable, so `transform()`
             // inside the listener always reads the LIVE value.
+            // HORIZONTAL wheel first: tilt-wheel / trackpad side-scroll
+            // (and Shift+wheel, which browsers report as deltaX) pans the
+            // canvas left/right. NATURAL SCROLL convention (like a page):
+            // tilting/scrolling right scrolls the viewport right, i.e. the
+            // content slides LEFT → the paper moves −dx (opposite of the
+            // drag gesture, where the paper follows the hand). The negated
+            // dx feeds applyPan, which ÷scales it for zoom-compensated
+            // visual speed (same contract as dragging).
+            if (event.deltaX !== 0) {
+                // deltaMode 1 (lines) → ~100px per line, matching the
+                // NOTCH_PIXELS convention in normalizeWheelFactor
+                const dx =
+                    event.deltaMode === 1 ? event.deltaX * 100 : event.deltaX;
+                transform(applyPan(transform(), -dx, 0));
+            }
+            // VERTICAL wheel: zoom at the pointer (unchanged contract).
+            // A pure horizontal event has deltaY === 0 → normalizeWheelFactor(0)
+            // returns 1 → applyZoom is a no-op, so the two gestures compose
+            // cleanly on diagonal trackpad scrolls.
             transform(applyZoom(transform(), normalizeWheelFactor(event.deltaY), point));
         };
         surface.addEventListener('wheel', handleWheel, { passive: false });
@@ -212,6 +244,9 @@ export const DrawDashboard = React.memo(() => {
     // on the HUD (the ZoomHud panel subtree, marked data-hud), the gesture
     // is left alone so HUD buttons remain clickable.
     const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+        // Track the cursor for the coordinate HUD regardless of the gesture
+        // (the readout must show coordinates even when no pan starts)
+        cursorPoint(getPointerPoint(event));
         // Any drag starting on the HUD subtree belongs to the HUD, not the
         // canvas (button clicks, future HUD drags, etc.)
         const target = event.target as HTMLElement;
@@ -226,9 +261,12 @@ export const DrawDashboard = React.memo(() => {
         panning(true);
     };
 
+    // Cursor tracking for the coordinate HUD (fires on EVERY move — not
+    // just while panning — so the readout always follows the pointer)
     const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-        if (!panning()) return;
         const point = getPointerPoint(event);
+        cursorPoint(point);
+        if (!panning()) return;
         const last = lastPointer();
         if (!last) return;
         // Pan by the pointer delta (grab-the-paper: the paper follows the
@@ -241,6 +279,12 @@ export const DrawDashboard = React.memo(() => {
     const endPan = () => {
         panning(false);
         lastPointer(null);
+    };
+
+    // Pointer left the canvas → hide the coordinate HUD (null = hidden)
+    const handlePointerLeave = () => {
+        cursorPoint(null);
+        endPan();
     };
 
     // ── HUD reset ──
@@ -257,7 +301,7 @@ export const DrawDashboard = React.memo(() => {
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={endPan}
-                onPointerLeave={endPan}
+                onPointerLeave={handlePointerLeave}
                 data-testid="canvas-surface"
             >
                 {/* The SVG grid — recomputed from the transform each render.
@@ -293,6 +337,24 @@ export const DrawDashboard = React.memo(() => {
                         }}
                     />
                 </div>
+                {/* Floating coordinate HUD (bottom-left): the pointer's
+                    canvas position relative to the world origin — the
+                    center of the entire canvas (the accent cross). Hidden
+                    when the pointer is off the canvas. Click-through: the
+                    drag-to-pan gesture works through it. */}
+                <CoordinateHud
+                    // Resolve the viewport-relative cursor point to canvas
+                    // coordinates relative to the origin (screen = (canvas
+                    // − pan) × scale → canvas = screen / scale + pan; the
+                    // pan IS the origin-relative canvas coordinate of the
+                    // viewport's top-left corner)
+                    point={
+                        cursorPoint()
+                            ? screenToCanvas(cursorPoint() as { x: number; y: number }, transform())
+                            : null
+                    }
+                    colors={{ border: PALETTE_BORDER, text: PALETTE_TEXT_FAINT }}
+                />
             </CanvasSurface>
             {/* Floating title — top-left, click-through, above the canvas.
                 NO header bar, NO footer bar: the canvas owns the viewport. */}

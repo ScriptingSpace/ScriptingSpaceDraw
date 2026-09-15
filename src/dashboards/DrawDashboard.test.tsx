@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { describe, it, expect, afterEach } from 'vitest';
 import { DrawDashboard } from './DrawDashboard';
 import { screenToCanvas, BASE_SPACING } from '../functions/canvasTransform';
+import { formatCoordinate } from '../components/CoordinateHud';
 
 afterEach(() => {
     cleanup();
@@ -436,6 +437,141 @@ describe('DrawDashboard — panning', () => {
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
         fireEvent.pointerUp(surface, {});
         expect(readOriginCross().x).toBeCloseTo(500, 9);
+    });
+});
+
+describe('DrawDashboard — horizontal wheel pan', () => {
+    it('pans left/right with deltaX at scale 1 (tilt wheel / Shift+wheel)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Tilt right / Shift+wheel-down: deltaX 100 → the viewport scrolls
+        // right (natural scroll, like a page) → content slides LEFT → the
+        // origin cross moves −100px on screen
+        fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaX: 100, deltaY: 0 });
+        expect(readOriginCross()).toEqual({ x: 300, y: 300 });
+        // Scale untouched — horizontal wheel never zooms
+        expect(readHudScale()).toBe('×1.000e+0');
+
+        // Tilt left: back to center
+        fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaX: -100, deltaY: 0 });
+        expect(readOriginCross()).toEqual({ x: 400, y: 300 });
+    });
+
+    it('zoom-compensates the deltaX pan (same visual speed at high zoom)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Zoom in 3 notches at the center → scale 1.728, origin stays (400, 300)
+        for (let index = 0; index < 3; index++) {
+            fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: 100 });
+        }
+        // deltaX 100 at scale 1.728 → 100/1.728 ≈ 57.87 canvas units →
+        // the origin cross shifts exactly −100px on screen (same visual
+        // speed as at scale 1 — the ÷scale compensation in applyPan)
+        fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaX: 100, deltaY: 0 });
+        expect(readOriginCross().x).toBeCloseTo(300, 9);
+        // Zoom level unchanged
+        expect(readHudScale()).toBe('×1.728e+0');
+    });
+
+    it('vertical-only wheel does NOT pan (deltaY zooms, deltaX stays 0)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Pure vertical wheel at the center: zoom 1 → 1.2, origin pinned
+        // (the ~1e-13 residue is one ULP of the zoom-at-pointer double math)
+        fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaX: 0, deltaY: 100 });
+        expect(readOriginCross().x).toBeCloseTo(400, 9);
+        expect(readOriginCross().y).toBe(300);
+        expect(readHudScale()).toBe('×1.200e+0');
+    });
+
+    it('line-mode deltaX (deltaMode 1) pans ~100px per line', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Firefox line-mode: deltaX 3 lines → 300px → origin −300px
+        fireEvent.wheel(surface, {
+            clientX: 400,
+            clientY: 300,
+            deltaX: 3,
+            deltaY: 0,
+            deltaMode: 1,
+        });
+        expect(readOriginCross()).toEqual({ x: 100, y: 300 });
+    });
+});
+
+describe('DrawDashboard — coordinate HUD', () => {
+    it('shows the cursor canvas position relative to the origin (canvas center)', () => {
+        render(<DrawDashboard />);
+        stubSurfaceRect();
+
+        // HUD hidden before any pointer event (no stale numbers)
+        expect(screen.queryByTestId('coord-hud')).toBeNull();
+
+        // Pointer at the viewport center = the world origin (0, 0) at the
+        // initial transform → the readout is exactly "x +0.0  y +0.0"
+        const surface = screen.getByTestId('canvas-surface');
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
+        expect(screen.getByTestId('coord-value').textContent).toBe('x +0.0  y +0.0');
+
+        // Pointer 100px right, 50px up from the center → canvas (100, −50)
+        // at scale 1 (screen = canvas at scale 1)
+        fireEvent.pointerMove(surface, { clientX: 500, clientY: 250 });
+        expect(screen.getByTestId('coord-value').textContent).toBe('x +100.0  y −50.0');
+
+        // Pointer 200px left, 100px down from the center → canvas (−200, 100)
+        fireEvent.pointerMove(surface, { clientX: 200, clientY: 400 });
+        expect(screen.getByTestId('coord-value').textContent).toBe('x −200.0  y +100.0');
+    });
+
+    it('coordinates account for pan and zoom (relative to the world origin)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Zoom in 1 notch at the center (scale 1.2, origin stays at center)
+        fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: 100 });
+        // Pan right 100px (space+drag): the origin moves to (500, 300)
+        fireEvent.keyDown(window, { code: 'Space' });
+        fireEvent.pointerDown(surface, { clientX: 300, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.keyUp(window, { code: 'Space' });
+
+        // Pointer at screen (400, 300) → canvas = screen/scale + pan.
+        // Transform derivation (all steps zoom-compensated):
+        //   zoom at center: pan = P/scale₁ + pan₁ − P/scale₂
+        //     = (400 − 400 − 400/1.2, 300 − 300 − 300/1.2) = (−333.33…, −250)
+        //   drag +100px: applyPan divides by scale → pan.x −= 100/1.2
+        //     = −333.33… − 83.33… = −416.66… (= −500/1.2 exactly)
+        //   canvas at screen (400, 300) = (400/1.2 − 500/1.2, 0) = (−83.33…, 0)
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
+        expect(screen.getByTestId('coord-value').textContent).toBe('x −83.3  y +0.0');
+        // Cross-check against the pure helper with the derived transform
+        const scale = 1.2;
+        const pan = { x: -500 / scale, y: -300 / scale };
+        const expected = screenToCanvas({ x: 400, y: 300 }, { ...pan, scale });
+        expect(expected.x).toBeCloseTo(-100 / scale, 9);
+        expect(expected.y).toBe(0);
+    });
+
+    it('hides the coordinate HUD when the pointer leaves the canvas', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
+        expect(screen.getByTestId('coord-hud')).toBeDefined();
+        fireEvent.pointerLeave(surface, {});
+        expect(screen.queryByTestId('coord-hud')).toBeNull();
+    });
+
+    it('formatCoordinate renders sign-padded 1-decimal readouts', () => {
+        expect(formatCoordinate(120, 'x')).toBe('x +120.0');
+        expect(formatCoordinate(-50.25, 'y')).toBe('y −50.3');
+        expect(formatCoordinate(0, 'x')).toBe('x +0.0');
+        expect(formatCoordinate(Number.NaN, 'y')).toBe('y +0.0');
     });
 });
 
