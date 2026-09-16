@@ -67,8 +67,15 @@ export const dragToPanPlugin = mountOf(
             const state = context.pointer() as DrawPointerState;
             if (!state || state.dragButton === null) return;
             if (!mayPan(state.dragButton)) return;
-            // Capture the pointer so the drag continues outside the canvas
-            (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
+            // Capture the pointer so the drag continues outside the canvas.
+            // Capture onto the SURFACE, not event.target (a transient child
+            // target loses capture when React re-renders the grid mid-pan)
+            // and failure must never abort — capture is an optimization
+            try {
+                surface.setPointerCapture?.(event.pointerId);
+            } catch {
+                // Capture unavailable — the drag still runs in-surface
+            }
         };
 
         // Right-click on the canvas must not open the context menu — the
@@ -120,6 +127,11 @@ export const dragToPanPlugin = mountOf(
         // pointerleave also ends the drag (the core plugin clears state on
         // leave; this keeps the interpreter consistent)
         surface.addEventListener('pointerleave', endDrag);
+        // Browser-cancelled pointer (touchpad gesture takeover etc.): the
+        // pointerup never comes — the drag state must unwind or the NEXT
+        // pointermove pans without any button held (the stale dragLast
+        // would interpret as a new frame delta)
+        surface.addEventListener('pointercancel', endDrag);
         surface.addEventListener('contextmenu', handleContextMenu);
 
         return () => {
@@ -127,6 +139,7 @@ export const dragToPanPlugin = mountOf(
             surface.removeEventListener('pointermove', handlePointerMove);
             surface.removeEventListener('pointerup', handlePointerUp);
             surface.removeEventListener('pointerleave', endDrag);
+            surface.removeEventListener('pointercancel', endDrag);
             surface.removeEventListener('contextmenu', handleContextMenu);
         };
     },

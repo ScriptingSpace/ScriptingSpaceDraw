@@ -326,7 +326,7 @@ export const nodeEditorPlugin = mountOf(
         // (JSON of shapeNodes' points). At release it re-computes against
         // the live geometry: an UNCHANGED signature (a click that never
         // moved) skips the release auto-lock — a mere press must never
-        // teleport a circle via the rim heal.
+        // record junctions the geometry never actually earned.
         let grabSig: string | null = null;
 
         // The node-point signature helper (grab + release records)
@@ -403,8 +403,16 @@ export const nodeEditorPlugin = mountOf(
             // drag either way
             setCursor('grabbing');
             // Capture the pointer so the drag continues outside the canvas
-            // bounds (same contract as the pan gesture)
-            (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
+            // bounds (same contract as the pan gesture). Capture onto the
+            // SURFACE (not event.target — a child/HUD/SVG line target is
+            // transient: React replaces those mid-gesture and the capture
+            // would evaporate), and failure must never abort the claim
+            // bookkeeping (a throw after `adjusting` is set would latch it).
+            try {
+                surface.setPointerCapture?.(event.pointerId);
+            } catch {
+                // Capture unavailable — the gesture still runs in-surface
+            }
         };
 
         const handlePointerMove = (event: PointerEvent) => {
@@ -618,18 +626,17 @@ export const nodeEditorPlugin = mountOf(
         // ── RELEASE auto-lock ("drag old shapes into a position where the
         // nodes share a coordinate → they lock") ──
         // A finished drag (whole-shape group move OR node adjustment)
-        // runs the SAME drop check a fresh draw gets (autoLockShapes):
-        // exact coincidence bonds everywhere; a MOVED circle additionally
-        // rims onto a lattice node within one grid step (the heal). The
-        // last move frame already wrote the settled geometry into the
-        // drawing state, so the check runs over the LIVE state. Guards:
+        // runs the SAME exact-contact check a fresh draw gets
+        // (autoLockShapes): only node POINT coincidence bonds — the
+        // settled geometry never slides toward a neighbor (a NEAR node,
+        // even one grid step away, must not snatch the shape onto it;
+        // intentional junctions bond per-frame via the node drag's
+        // destination scan). The last move frame already wrote the
+        // settled geometry into the drawing state, so the check runs
+        // over the LIVE state. Guards:
         // - Geometry-signature compare: an unchanged grab (a press-click
         //   that never moved) skips the lock — a mere press must never
-        //   teleport a circle via the heal.
-        // - Node adjustments heal=FALSE (the elastic hold / proximity
-        //   connect already bond intended junctions per-frame; the heal
-        //   must not re-slide a just-adjusted circle). Whole-shape drags
-        //   heal=true (a carried circle settles like a dropped one).
+        //   record bonds for geometry that did not actually move.
         // - Only the MOVED shapes participate (the bond group / the
         //   adjusted shape); static shapes never bond each other.
         const releaseLock = (grabbedIndex: number, groupMove: boolean) => {
@@ -637,7 +644,7 @@ export const nodeEditorPlugin = mountOf(
             const moving = groupMove
                 ? groupOf(state.connections ?? [], grabbedIndex)
                 : [grabbedIndex];
-            const locked = autoLockShapes(state, moving, groupMove);
+            const locked = autoLockShapes(state, moving);
             // Write only when the lock changed something (the common
             // no-contact release is a pure no-op)
             if (
@@ -653,22 +660,32 @@ export const nodeEditorPlugin = mountOf(
         };
 
         // Release the grab — the adjusted/moved geometry is already live
-        // in the state (each move wrote it); the adjusting flag unwinds
-        // and the release auto-lock runs for ACTUAL movements.
+        // in the state (each move wrote it); the gesture flag ALWAYS
+        // unwinds here and the release auto-lock runs only for ACTUAL
+        // movements.
         const endGrab = () => {
             if (!grab) return;
             const released = grab;
             const sig = grabSig;
             grab = null;
             grabSig = null;
+            // ALWAYS unwind `adjusting` first — a release that moved
+            // NOTHING (a click with no pointermove, a jitter inside half a
+            // grid cell, an elastic-hold bend that returns to the twin)
+            // must still clear the flag, otherwise it latches FOREVER and
+            // gates EVERY gesture: dragToPanPlugin's mayPan and
+            // toolRouterPlugin's draw gate both refuse to run while it is
+            // set → "after zooming around, dragging AND drawing both stop
+            // responding". The release check below still runs for real
+            // drags only.
+            context.drawing({ ...context.drawing(), adjusting: false });
             // Re-read the LIVE grabbed shape and only lock when the drag
-            // actually moved its nodes
+            // actually moved its nodes (a mere click never records bonds)
             const current = context.drawing().shapes[released.shapeIndex];
             const moved =
                 !!current && (!sig || shapeSig(current) !== sig);
             if (!moved) return;
             releaseLock(released.shapeIndex, released.mode === 'shape');
-            context.drawing({ ...context.drawing(), adjusting: false });
         };
 
         const handlePointerUp = () => {
@@ -683,11 +700,20 @@ export const nodeEditorPlugin = mountOf(
             endGrab();
             setCursor(null);
         };
+        // Browser-cancelled pointer (touchpad gesture takeover etc.): the
+        // pointerup will never come — unwind exactly like a leave or the
+        // grabbed gesture's state latches and every later press is refused
+        const handlePointerCancel = () => {
+            endGrab();
+            setCursor(null);
+        };
 
         surface.addEventListener('pointerdown', handlePointerDown);
         surface.addEventListener('pointermove', handlePointerMove);
         surface.addEventListener('pointerup', handlePointerUp);
         surface.addEventListener('pointerleave', handlePointerLeave);
+        // Browser-cancelled gestures unwind with the release path
+        surface.addEventListener('pointercancel', handlePointerCancel);
         // The deliberate bond-breaker
         surface.addEventListener('dblclick', handleDoubleClick);
 
@@ -696,6 +722,7 @@ export const nodeEditorPlugin = mountOf(
             surface.removeEventListener('pointermove', handlePointerMove);
             surface.removeEventListener('pointerup', handlePointerUp);
             surface.removeEventListener('pointerleave', handlePointerLeave);
+            surface.removeEventListener('pointercancel', handlePointerCancel);
             surface.removeEventListener('dblclick', handleDoubleClick);
         };
     },

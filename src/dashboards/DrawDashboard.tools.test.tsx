@@ -1490,7 +1490,7 @@ describe('circle locks — rim nodes bond like any other node', () => {
         expect(halos().length).toBe(2);
     });
 
-    it('a circle edge dropped 45° toward a lattice node SLIDES the circle to lock exactly (drop check heal)', () => {
+    it('a circle edge dropped NEAR (one grid step from) a lattice node does NOT slide or bond', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
@@ -1504,10 +1504,9 @@ describe('circle locks — rim nodes bond like any other node', () => {
         // Circle: center (0,0) [press 400,300], edge released 45° toward
         // the corner at (102,103) [screen 502,403] — raw distance ≈ 144.7
         // → radius quantizes to 100 with the rim at (100,0): ONE grid step
-        // from the corner (100,100). The exact check misses (no coincide)
-        // — the rim heal fires: the circle SLIDES (100,100)−(100,0) =
-        // (0,100) so the rim lands EXACTLY on the corner. Radius stays
-        // 100; the center stays lattice.
+        // from the corner (100,100). NO exact contact anywhere → the
+        // circle commits EXACTLY where it was drawn — never pulled into
+        // the node one step over (the no-near-drop-snapping contract).
         fireEvent.click(screen.getByTestId('tool-circle'));
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 502, clientY: 403 });
@@ -1515,18 +1514,20 @@ describe('circle locks — rim nodes bond like any other node', () => {
 
         expect(committedElements().length).toBe(2);
         const shapes = committedElements();
-        // Slid: center (0,100) → screen (400,400), radius unchanged
+        // NOT slid: center (0,0) → screen (400,300), radius unchanged —
+        // the drawn geometry is where the grid contract left it
         expect(shapes[1].getAttribute('cx')).toBe('400');
-        expect(shapes[1].getAttribute('cy')).toBe('400');
+        expect(shapes[1].getAttribute('cy')).toBe('300');
         expect(shapes[1].getAttribute('r')).toBe('100');
-        // Bonded
+        // Nothing bonded — near is NOT on
         const halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
-        expect(halos().length).toBe(2);
+        expect(halos().length).toBe(0);
 
-        // Move as one: grab the RECT's body (its left edge midpoint world
-        // (100,150) → screen (500,450): 0 to the stroke, ≥45px to every
-        // node, ≥53px to the circle stroke) and drag +100:+0 — the circle
-        // rides (the lock survived the drop)
+        // The shapes stay INDEPENDENT: grab the RECT's body (left-edge
+        // midpoint world (100,150) → screen (500,450): 0 to the stroke,
+        // ≥50px to every node, ≥80px to the circle stroke) and drag
+        // +100:+0 — the rect moves alone, the circle does NOT ride (no
+        // bond formed "for no reason")
         fireEvent.pointerDown(surface, { clientX: 500, clientY: 450, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 600, clientY: 450 });
         fireEvent.pointerUp(surface, {});
@@ -1534,13 +1535,13 @@ describe('circle locks — rim nodes bond like any other node', () => {
         // Rect: (200,100)–(300,200) → x 600 y 400 w 100 h 100
         expect(moved[0].getAttribute('x')).toBe('600');
         expect(moved[0].getAttribute('y')).toBe('400');
-        // Circle: center (100,100) → screen cx 500, cy 400
-        expect(moved[1].getAttribute('cx')).toBe('500');
-        expect(moved[1].getAttribute('cy')).toBe('400');
-        expect(halos().length).toBe(2);
+        // Circle: still center (0,0) → screen cx 400, cy 300
+        expect(moved[1].getAttribute('cx')).toBe('400');
+        expect(moved[1].getAttribute('cy')).toBe('300');
+        expect(halos().length).toBe(0);
     });
 
-    it('a drop with NO node within a grid step stays un-bonded (the window is not global)', () => {
+    it('a drop with NO node at its drawn position stays un-bonded (no near-node snapping)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
@@ -1551,8 +1552,8 @@ describe('circle locks — rim nodes bond like any other node', () => {
         fireEvent.pointerUp(surface, {});
 
         // Circle: center (0,0), edge east at (102,−3) → r 100, rim e at
-        // (100,0): distance to the nearest rect node (corner 'a' (200,100))
-        // = √(100²+100²) ≈ 141 > one grid step → NO heal, NO bond
+        // (100,0): nearest rect node (corner 'a' (200,100)) is
+        // √(100²+100²) ≈ 141 away — no coincidence, no pull, no bond
         fireEvent.click(screen.getByTestId('tool-circle'));
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 502, clientY: 297 });
@@ -1619,20 +1620,20 @@ describe('circle locks — rim nodes bond like any other node', () => {
         expect(halos().length).toBe(2);
     });
 
-    it('DRAGGING an old circle: release one step from a lattice node SLIDES onto it and locks (heal)', () => {
+    it('DRAGGING an old circle: release one step from a lattice node does NOT slide or lock (only exact contact does)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
         // Line L: world (−100,0)→(0,0), a 1-step straight chord [press
-        // 300,300 → 400,300]. Its END node (0,0) is the (lattice) heal
-        // target for the circle below.
+        // 300,300 → 400,300]. Its END node (0,0) is the node the circle
+        // below gets dragged NEAR — but never ON.
         fireEvent.click(screen.getByTestId('tool-line'));
         fireEvent.pointerDown(surface, { clientX: 300, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
         fireEvent.pointerUp(surface, {});
         // Circle: center (400,0), r 100 [press 800,300 → 900,300] — the
         // nearest foreign node (L.end (0,0)) sits 3 steps from rim w
-        // (300,0) → NO commit lock (no exact contact, no one-step rim)
+        // (300,0) → NO commit contact → the circle commits where drawn
         fireEvent.click(screen.getByTestId('tool-circle'));
         fireEvent.pointerDown(surface, { clientX: 800, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 900, clientY: 300 });
@@ -1641,46 +1642,65 @@ describe('circle locks — rim nodes bond like any other node', () => {
         expect(nodeDots().filter((dot) => dot.getAttribute('r') === '8')).toHaveLength(0);
 
         // Body-grab the circle at the rim's southeast 45° spot (world
-        // (471,71) → screen (871,371): ≈0.34px off the stroke, ≥63px to
-        // every node) and drag dx −3 steps dy +1 step: the center lands
-        // at world (100,100) — corners of the node diamond: rim w (0,100),
-        // e (200,100), s (100,200), n (100,0). NOTHING coincides with
-        // L's end (0,0) exactly (tier 1 empty) — but rim w sits ONE grid
-        // step from (0,0) → the RELEASE heal slides the circle Δ =
-        // (0,−100) so rim w lands EXACTLY on (0,0): center (100,0)
+        // (471,71) → screen (871,371): ≈0.4px off the stroke, ≥76px to
+        // every node) and drag dx −3 steps dy +1 step: the center settles
+        // at world (100,100) — rim w lands at (0,100), ONE grid step from
+        // L's end (0,0). NOTHING coincides (tier 1 empty) → the release
+        // check must NOT slide the circle the last step onto the node (the
+        // no-near-drop-snapping contract): it settles exactly as dragged.
         fireEvent.pointerDown(surface, { clientX: 871, clientY: 371, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 571, clientY: 471 });
         fireEvent.pointerUp(surface, {});
 
         const shapes = committedElements();
-        // Slid: center (100,0) → screen cx 500, cy 300; radius untouched
+        // NOT slid: center (100,100) → screen cx 500, cy 400; radius
+        // untouched — the drag result stands as released
         expect(shapes[1].getAttribute('cx')).toBe('500');
-        expect(shapes[1].getAttribute('cy')).toBe('300');
+        expect(shapes[1].getAttribute('cy')).toBe('400');
         expect(shapes[1].getAttribute('r')).toBe('100');
-        // Bonded: rim w == L.end
-        const halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
-        expect(halos().length).toBe(2);
+        // NOT bonded: one step from the node is not ON the node
+        expect(nodeDots().filter((dot) => dot.getAttribute('r') === '8')).toHaveLength(0);
 
-        // The lock is real: grab L's STROKE between its start node (world
-        // (−100,0) → screen (300,300), 13px away) and its bend node (the
-        // straight 1-step chord's control sits at the midpoint
-        // (−50,0) → screen (350,300)): press (337,300) — 0px off the
-        // stroke, ≥13px clear of every node — then move +100:+0. The
-        // bond group carries the CIRCLE with the line.
+        // The only thing that still locks is EXACT contact: grab L's body
+        // (press (337,300) — 0px off the stroke, ≥13px clear of every
+        // node) and move +100:+0 so its end node travels (0,0) → (100,0)
+        // ONTO the circle's north rim node (100,0). L is unbonded, so the
+        // move carries L alone; the RELEASE check then records the
+        // genuine coincidences L.end ↔ rim n AND L's re-snapped bend
+        // ((50,0) → (100,0)) ↔ rim n.
         fireEvent.pointerDown(surface, { clientX: 337, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 437, clientY: 300 });
         fireEvent.pointerUp(surface, {});
+        const after = committedElements();
+        // L moved ALONE (the circle was not bonded during the drag):
+        // start (0,0), bend+end folded to (100,0) by the moveShape grid
+        // safety net → screen M 400 300 Q 500 300 500 300
+        expect(after[0].getAttribute('d')).toBe('M 400 300 Q 500 300 500 300');
+        // The circle never moved
+        expect(after[1].getAttribute('cx')).toBe('500');
+        expect(after[1].getAttribute('cy')).toBe('400');
+        // The exact junction bonded: L.start clear, L.end + L.control +
+        // rim n share (100,0) → 3 halo'd dots
+        expect(nodeDots().filter((dot) => dot.getAttribute('r') === '8')).toHaveLength(3);
+
+        // The lock is real: grab L's STROKE between its start node
+        // (world (0,0) → screen (400,300), 50px away) and its junction
+        // node ((100,0) → screen (500,300), 50px away): press (450,300)
+        // — 0px off the stroke — then move +100:+0. The bond group
+        // carries the CIRCLE with the line (move as one).
+        fireEvent.pointerDown(surface, { clientX: 450, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 550, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
         const moved = committedElements();
-        // Circle: center (200,0) → screen cx 600 — it rode the group move
+        // Circle: center (200,100) → screen cx 600, cy 400 — it rode the
+        // group move
         expect(moved[1].getAttribute('cx')).toBe('600');
-        // Line: start (0,0), control→snap((50,0)) = (100,0), end (100,0)
-        // — the weld rides (rim w lands on the moved end (100,0))
-        expect(moved[0].getAttribute('d')).toBe('M 400 300 Q 500 300 500 300');
-        // 3 halos: rim w ↔ L.end rides, AND the release check bonds the
-        // line's bend — the snap safety net folded the half-lattice
-        // control ((−50,0)+100 = (50,0) → snaps to (100,0)) exactly onto
-        // rim w (100,0): another real coincidence the group move created.
-        expect(halos().length).toBe(3);
+        expect(moved[1].getAttribute('cy')).toBe('400');
+        // L: start (100,0) → screen 500, bend+end (200,0) → screen 600;
+        // the welded junction rides (rim n lands on the moved end
+        // (200,0)) → still 3 halos
+        expect(moved[0].getAttribute('d')).toBe('M 500 300 Q 600 300 600 300');
+        expect(nodeDots().filter((dot) => dot.getAttribute('r') === '8')).toHaveLength(3);
     });
 
     it('a press with NO movement never locks (the release check needs a real drag)', () => {
@@ -1708,6 +1728,195 @@ describe('circle locks — rim nodes bond like any other node', () => {
         expect(nodeDots().filter((dot) => dot.getAttribute('r') === '8')).toHaveLength(0);
         const circles = committedElements().filter((el) => el.tagName === 'circle');
         expect(circles[0].getAttribute('cx')).toBe('800'); // never slid
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GESTURE KILL-SWITCH regressions — `drawing.adjusting` is the universal
+// gesture gate (dragToPanPlugin.mayPan yields when it is set, toolRouter
+// refuses to start a draw, the node editor refuses grabs). A grab whose
+// release leaves every node point UNCHANGED must still unwind the flag —
+// otherwise one click on a shape bricks every later gesture (drag + draw
+// both dead) — the "sometimes after zooming, nothing works" report.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('gesture unwind — a no-move grab must never latch the adjusting flag', () => {
+    // Snapshot of the origin BEFORE the pan-drag inside expectDrawingAlive
+    let originPrev = { x: 400, y: 300 };
+
+    // Proves both gates are ALIVE after the suspicious gesture: a fresh
+    // 1-step line commits (draw gate open) and a left-drag on empty canvas
+    // pans by exactly the pointer delta (pan gate open).
+    const expectDrawingAlive = () => {
+        fireEvent.click(screen.getByTestId('tool-line'));
+        fireEvent.pointerDown(screen.getByTestId('canvas-surface'), { clientX: 200, clientY: 300, button: 0 });
+        fireEvent.pointerMove(screen.getByTestId('canvas-surface'), { clientX: 300, clientY: 300 });
+        fireEvent.pointerUp(screen.getByTestId('canvas-surface'), {});
+        // Circle + the new line: the draw gate was OPEN
+        expect(committedElements().length).toBe(2);
+        // 1-step chord renders straight: M <press> Q <midpoint> <end>
+        expect(committedElements()[1].getAttribute('d')).toBe('M 200 300 Q 250 300 300 300');
+        fireEvent.click(screen.getByTestId('tool-line')); // disarm
+        // Empty spot (100,500): ≥10px screen from every committed shape's
+        // nodes, off every stroke — the press is a plain pan drag
+        const surface = screen.getByTestId('canvas-surface');
+        fireEvent.pointerDown(surface, { clientX: 100, clientY: 500, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 200, clientY: 500 });
+        fireEvent.pointerUp(surface, {});
+        const origin = readOriginCross();
+        expect(origin.x).toBe(originPrev.x + 100);
+        expect(origin.y).toBe(originPrev.y);
+    };
+
+    it('a click on a node with NO move keeps drawing AND panning alive', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Circle: center world (0,0) → screen (400,300), r 100
+        fireEvent.click(screen.getByTestId('tool-circle'));
+        fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-circle')); // disarm (pan mode)
+
+        // PAN-MODE press-release on the center node with NO pointermove:
+        // the node editor claims the grab, the release finds the geometry
+        // unchanged — the unwind must still run
+        fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerUp(surface, {});
+
+        // Draw gate + pan gate still open
+        originPrev = readOriginCross();
+        expectDrawingAlive();
+    });
+
+    it('a line-grab jitter inside one grid half-cell keeps drawing AND panning alive', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Circle: center world (0,0), r 100 — the southeast 45° body spot
+        // is screen (471,371): ≈1px off the stroke, ≥76px from every node
+        fireEvent.click(screen.getByTestId('tool-circle'));
+        fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-circle')); // disarm
+
+        // Body grab + a 21px jitter: the world delta < half a grid cell →
+        // moveShape snaps the delta to (0,0) → every node point stays put
+        // → the release signature is UNCHANGED — the unwind must still run
+        fireEvent.pointerDown(surface, { clientX: 471, clientY: 371, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 492, clientY: 392 });
+        fireEvent.pointerUp(surface, {});
+        // The circle never moved (the snap folded the jitter to zero)
+        expect(committedElements()[0].getAttribute('cx')).toBe('400');
+        expect(committedElements()[0].getAttribute('cy')).toBe('300');
+
+        originPrev = readOriginCross();
+        expectDrawingAlive();
+    });
+
+    it('zoom out + zoom in then a no-move shape click keeps drawing AND panning alive (user scene)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Circle: center world (0,0), r 100
+        fireEvent.click(screen.getByTestId('tool-circle'));
+        fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-circle')); // disarm
+
+        // Wheel-zoom OUT six notches then IN six (deltaY 100 = one notch ×
+        // 1.2): the scale round-trips to ≈1 — the user is "back" where
+        // they started, slightly drifted
+        for (let index = 0; index < 6; index++) {
+            fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: 100 });
+        }
+        for (let index = 0; index < 6; index++) {
+            fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: -100 });
+        }
+
+        // FIRST press after the zoom lands on a shape (the origin cross
+        // always marks world (0,0) = the circle's center node) with NO
+        // move — the exact re-orient click that used to brick every gesture
+        const junction = readOriginCross();
+        fireEvent.pointerDown(surface, { clientX: junction.x, clientY: junction.y, button: 0 });
+        fireEvent.pointerUp(surface, {});
+
+        originPrev = junction;
+        expectDrawingAlive();
+    });
+
+    describe('pointercancel — a browser-cancelled gesture unwinds like a leave', () => {
+        it('a cancelled drawing drag discards the draft and the next press draws fresh', () => {
+            render(<DrawDashboard />);
+            const surface = stubSurfaceRect();
+
+            // Circle first (the only committed shape)
+            fireEvent.click(screen.getByTestId('tool-circle'));
+            fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+            fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+            fireEvent.pointerUp(surface, {});
+
+            // Arm the line tool, start a drag, let the browser cancel it
+            // mid-draw (touchpad gesture takeover etc.)
+            fireEvent.click(screen.getByTestId('tool-line'));
+            fireEvent.pointerDown(surface, { clientX: 200, clientY: 300, button: 0 });
+            fireEvent.pointerMove(surface, { clientX: 300, clientY: 300 });
+            expect(draftElement()).not.toBeNull(); // the mid-draw draft lives
+            fireEvent.pointerCancel(surface, {});
+            // The gesture unwound: no committed shape, NO orphaned draft
+            expect(committedElements().length).toBe(1);
+            expect(draftElement()).toBeNull();
+
+            // A fresh press draws normally (no latched flag, no zombie)
+            fireEvent.pointerDown(surface, { clientX: 200, clientY: 300, button: 0 });
+            fireEvent.pointerMove(surface, { clientX: 300, clientY: 300 });
+            fireEvent.pointerUp(surface, {});
+            expect(committedElements().length).toBe(2);
+            expect(committedElements()[1].getAttribute('d')).toBe('M 200 300 Q 250 300 300 300');
+        });
+
+        it('a cancelled node-grab keeps the adjusted geometry and never latches', () => {
+            render(<DrawDashboard />);
+            const surface = stubSurfaceRect();
+
+            // Circle: center (0,0), r 100
+            fireEvent.click(screen.getByTestId('tool-circle'));
+            fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+            fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+            fireEvent.pointerUp(surface, {});
+            fireEvent.click(screen.getByTestId('tool-circle')); // disarm
+
+            // Grab the center node, drag it a full grid step (the per-move
+            // adjustment writes live), then the browser cancels the pointer
+            fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+            fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+            fireEvent.pointerCancel(surface, {});
+            // The adjusted geometry STAYS (cancel behaves like leave: it
+            // keeps the moved shape — no draft involvement here)
+            const circle = committedElements()[0];
+            expect(circle.getAttribute('cx')).toBe('500');
+            expect(circle.getAttribute('cy')).toBe('300');
+            expect(circle.getAttribute('r')).toBe('100');
+
+            // And nothing latched: a fresh draw works
+            fireEvent.click(screen.getByTestId('tool-line'));
+            fireEvent.pointerDown(surface, { clientX: 200, clientY: 300, button: 0 });
+            fireEvent.pointerMove(surface, { clientX: 300, clientY: 300 });
+            fireEvent.pointerUp(surface, {});
+            expect(committedElements().length).toBe(2);
+            expect(committedElements()[1].getAttribute('d')).toBe('M 200 300 Q 250 300 300 300');
+        });
+    });
+
+    it('the grid SVG is a presentation layer — never a pointer target', () => {
+        render(<DrawDashboard />);
+        stubSurfaceRect();
+        // Presentation-only contract (same as the drawing + node overlays):
+        // the whole-viewport grid svg must not flip event.target between the
+        // surface and its transient <line> children
+        expect(screen.getByTestId('grid-svg').style.pointerEvents).toBe('none');
     });
 });
 

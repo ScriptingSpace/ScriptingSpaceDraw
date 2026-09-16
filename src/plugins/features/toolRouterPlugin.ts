@@ -86,8 +86,18 @@ export const toolRouterPlugin = mountOf(
             const drawingState = context.drawing();
             context.drawing({ ...drawingState, drawing: true });
             // Capture the pointer so the tool drag continues outside the
-            // canvas bounds (mirrors the pan gesture's capture)
-            (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
+            // canvas bounds (mirrors the pan gesture's capture). Capture
+            // onto the SURFACE, not event.target: the press can land on a
+            // transient child (svg line/HUD fragment) that React replaces
+            // mid-gesture — a capture on a removed element evaporates and
+            // the drag dies with the pointer outside the canvas. Guarded:
+            // a capture throw must never abort the drag bookkeeping (the
+            // `drawing` flag above would latch).
+            try {
+                surface.setPointerCapture?.(event.pointerId);
+            } catch {
+                // Capture unavailable — the drag still runs in-surface
+            }
             tool.handlers.onDragStart?.(world);
         };
 
@@ -137,10 +147,24 @@ export const toolRouterPlugin = mountOf(
             context.drawing({ ...state, drawing: false, draft: null });
         };
 
+        // Browser-cancelled pointer (touchpad gesture takeover etc.): the
+        // pointerup never comes — unwind the SAME way as a leave or the
+        // `drawing` flag + half-drawn draft latch and every later press is
+        // refused (the gesture-gate read in handlePointerDown)
+        const handlePointerCancel = () => {
+            const state = context.drawing();
+            if (!state.drawing) return;
+            context.drawing({ ...state, drawing: false, draft: null });
+            // Also release the pointer capture this drag holds (paired with
+            // setPointerCapture — a cancelled pointer's capture releases
+            // implicitly, so this is belt for captures taken elsewhere)
+        };
+
         surface.addEventListener('pointerdown', handlePointerDown);
         surface.addEventListener('pointermove', handlePointerMove);
         surface.addEventListener('pointerup', handlePointerUp);
         surface.addEventListener('pointerleave', handlePointerLeave);
+        surface.addEventListener('pointercancel', handlePointerCancel);
 
         // ── Tool shortcuts ──
         // keydown on window: activate the tool whose shortcut matches
@@ -158,6 +182,7 @@ export const toolRouterPlugin = mountOf(
             surface.removeEventListener('pointermove', handlePointerMove);
             surface.removeEventListener('pointerup', handlePointerUp);
             surface.removeEventListener('pointerleave', handlePointerLeave);
+            surface.removeEventListener('pointercancel', handlePointerCancel);
             window.removeEventListener('keydown', handleKeyDown);
         };
     },

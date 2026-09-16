@@ -98,10 +98,20 @@ export const pointerPlugin = mountOf(
             context.render();
         };
 
+        // Browser-cancelled pointer (touchpad gesture takeover etc.): the
+        // pointerup never comes — a stale dragLast/dragButton would make
+        // the NEXT stray pointermove register as a drag frame (the pan
+        // interpreter reads it). Unwind exactly like a leave.
+        const handlePointerCancel = () => {
+            write({ cursor: null, dragLast: null, dragButton: null });
+            context.render();
+        };
+
         surface.addEventListener('pointerdown', handlePointerDown);
         surface.addEventListener('pointermove', handlePointerMove);
         surface.addEventListener('pointerup', handlePointerUp);
         surface.addEventListener('pointerleave', handlePointerLeave);
+        surface.addEventListener('pointercancel', handlePointerCancel);
 
         // Disposer — removes every listener (plugin removal/unmount safety)
         return () => {
@@ -109,6 +119,7 @@ export const pointerPlugin = mountOf(
             surface.removeEventListener('pointermove', handlePointerMove);
             surface.removeEventListener('pointerup', handlePointerUp);
             surface.removeEventListener('pointerleave', handlePointerLeave);
+            surface.removeEventListener('pointercancel', handlePointerCancel);
         };
     },
 ) satisfies DrawPlugin;

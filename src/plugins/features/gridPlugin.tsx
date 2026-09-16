@@ -29,7 +29,15 @@ export const gridPlugin = mountOf(
                 width={width}
                 height={height}
                 data-testid="grid-svg"
-                style={{ display: 'block' }}
+                style={{
+                    display: 'block',
+                    // Presentation-only (the same contract as the drawing +
+                    // node overlays): the whole-viewport svg — and its
+                    // transient <line> children, which React replaces on
+                    // every zoom re-render — must never become the
+                    // event.target of a press
+                    pointerEvents: 'none',
+                }}
             >
                 <GridLayer
                     transform={transform}

@@ -35,20 +35,24 @@
 // AUTO-CONNECT AT COMMIT (cross-reference: functions/connection.ts +
 // nodeEditorPlugin's move-as-one contract): when a shape is DROPPED, ALL
 // of its nodes check whether any existing shape has a node at that
-// position — the pair locks and moves as one until the user breaks the
-// junction (double-click or pull-the-node-out). The check has two tiers,
-// so locking is not flaky:
-// - EXACT CONTACT (any node vs any node): both on the same world point →
-//   bond, no movement. Point-driven drops (line ends, circle centers,
-//   rect corners) snap to the lattice, so an aimed drop coincides.
-// - RIM-CONTACT HEAL (circle rim nodes only): the rim is DIMENSIONAL —
-//   radius quantization puts rim nodes at fixed compass points, so a
-//   drop aimed at a DIAGONAL node commits the rim up to one grid step
-//   away (the classic "sometimes locks, sometimes doesn't"). When NO
-//   exact contact exists, the nearest lattice node within one grid step
-//   of a rim welds the DROP: the whole circle TRANSLATES (snapShapeNode)
-//   so that rim lands EXACTLY on the twin — radius stays quantized, the
-//   center stays on the lattice. Existing geometry never moves.
+// EXACT position — the pair locks and moves as one until the user breaks
+// the junction (double-click or pull-the-node-out).
+//
+// EXACT CONTACT ONLY (any node vs any node): both nodes on the same
+// world point → bond, and NO geometry moves. Point-driven drops (line
+// ends, circle centers, rect corners) snap to the lattice, so an AIMED
+// drop (released onto the twin's grid point) coincides and bonds.
+//
+// NO NEAR-DROP SNAPPING (user bug report: "when I draw close to another
+// shape it gets snapped into that shape node for no reason — it
+// shouldn't have done that"): the shape settles exactly where the GRID
+// contract put it, never pulled TOWARD a neighbor. The former
+// "rim-contact heal" (sliding a freshly dropped circle up to one grid
+// step onto a nearby lattice node) is REMOVED — it snapped/teleported
+// shapes into neighboring nodes on incidental proximity. Locking now
+// requires the drawn node to already sit ON the twin's point; anything
+// short of that stays free until the user deliberately CONNECTS it
+// (node drag → proximity weld, nodeEditorPlugin) or never locks at all.
 //
 // SHORTCUTS: KeyC (circle), KeyR (rectangle), KeyL (line/curve) — via
 // toolRouter.
@@ -60,11 +64,10 @@ import {
     createRectShape,
     quantizeRadius,
     shapeNodes,
-    snapShapeNode,
     snapToGrid,
 } from '../../functions/shapes';
 import { BASE_SPACING } from '../../functions/canvasTransform';
-import { bondsOf, connect } from '../../functions/connection';
+import { connect } from '../../functions/connection';
 import type { DrawBond } from '../../functions/connection';
 import type { DrawPoint, DrawShape } from '../../functions/shapes';
 import { mountOf } from '../core/DrawPluginRegistry';
@@ -94,53 +97,24 @@ const writeDraft = (context: DrawPluginContext, draft: DrawShape | null) => {
     } as never);
 };
 
-// RIM_CONTACT_WINDOW — the circle-rim drop-heal window (one grid step):
-// quantized radius + fixed compass points put a diagonal-intent drop's
-// rim up to one step from the aimed node; anything FURTHER is a genuinely
-// different junction and stays un-bonded (the grid contract keeps the
-// aim precision honest — beyond a step the user was not dropping on it).
-const RIM_CONTACT_WINDOW = BASE_SPACING;
-
-// isLatticeNodePoint — a bond weld target must sit on the grid lattice:
-// sliding a circle rim onto it keeps the center lattice (twin − rim is
-// then a lattice offset). Half-lattice points (straight 1-step curve
-// bends) are EXCLUDED — exact contact with one still bonds (that path
-// doesn't move geometry, so the grid contract is safe).
-const isLatticeNodePoint = (point: { x: number; y: number }): boolean =>
-    ((point.x % BASE_SPACING) + BASE_SPACING) % BASE_SPACING === 0 &&
-    ((point.y % BASE_SPACING) + BASE_SPACING) % BASE_SPACING === 0;
-
-// The circle rim node ids (the four cardinal size handles; the center is
-// point-driven and never needs the heal)
-const RIM_NODE_IDS = ['e', 's', 'w', 'n'];
-
-// autoLock — THE DROP CHECK, shared by BOTH lock moments (the same two
-// tiers run whether the nodes arrived via a fresh drawing commit or via a
-// drag-release of an old shape):
+// autoLock — THE DROP CHECK, shared by BOTH lock moments (the same exact
+// contact scan runs whether the nodes arrived via a fresh drawing commit
+// or via a drag-release of an old shape):
 //
-// 1. EXACT CONTACT: any moving-node vs any other-node point coincidence
-//    bonds immediately and NO movement runs (guaranteed welds first).
-// 2. RIM-CONTACT HEAL (only when the caller allows it): for a moving
-//    CIRCLE, one step of slack heals the dimensional rim: the nearest
-//    EXISTING LATTICE node within one grid step of a rim node slides the
-//    circle so that rim lands EXACTLY on it (snapShapeNode — translation,
-//    radius untouched, center stays lattice). ONE weld per drop (the
-//    closest rim contact), then the contacts re-read on the WELDED
-//    geometry and every remaining coincidence bonds.
+// EXACT CONTACT: any moving-node vs any other-node point coincidence
+// bonds immediately and NO geometry moves (both endpoints share the
+// world point, so a bond is purely graph data).
 //
-// `movingIndex` — the shape that just settled ("moved"). Guards:
-// - Never bonds two UNmoving shapes (scan targets are the other shapes
-//   only; the caller decides which indices were the moving set — a
-//   release that moved nothing skips the check entirely).
-// - Heal candidates must be LATTICE nodes AND rims with NO existing bond
-//   (snatching an already-welded rim away from its twin to weld it
-//   elsewhere would silently dissolve a bond — violating the "until the
-//   user purposely break the node" contract).
+// `movingIndex` — the shape that just settled ("moved"). Guard: never
+// bonds two UNmoving shapes (scan targets are the other shapes only;
+// the caller decides which indices were the moving set — a release
+// that moved nothing skips the check entirely). Contact between two
+// nodes of the SAME shape never bonds (same-shape coincidences are
+// geometric facts, not junctions).
 // Pure — no state handle touched.
 const autoLock = (
     state: { shapes: DrawShape[]; connections: DrawBond[] },
     movingIndex: number,
-    healRims: boolean,
 ): { shapes: DrawShape[]; connections: DrawBond[] } => {
     const shape = state.shapes[movingIndex];
     if (!shape) return state;
@@ -152,9 +126,8 @@ const autoLock = (
             others.push({ shapeIndex: s, nodeId: node.id, point: node.point });
         }
     }
-    const bondsNow = (): DrawBond[] => state.connections;
 
-    // ── Tier 1: exact contact (all nodes, both directions) ──
+    // ── Exact contact: all nodes, both directions ──
     const nodes = shapeNodes(shape);
     const exact: { node: string; other: { shapeIndex: number; nodeId: string } }[] = [];
     for (const node of nodes) {
@@ -167,83 +140,23 @@ const autoLock = (
             }
         }
     }
-    if (exact.length > 0) {
-        // Exact contacts win — no geometry movement, bond them all
-        let bonds = bondsNow();
-        for (const contact of exact) {
-            bonds = connect(bonds, { shapeIndex: movingIndex, nodeId: contact.node }, contact.other);
-        }
-        return { shapes: state.shapes, connections: bonds };
+    // Contact wins — no geometry movement, bond them all. No contact →
+    // the drop stands alone: a NEAR node (a step away, half a step …)
+    // never pulls the shape (the no-near-drop-snapping contract).
+    let bonds = state.connections;
+    for (const contact of exact) {
+        bonds = connect(bonds, { shapeIndex: movingIndex, nodeId: contact.node }, contact.other);
     }
-
-    // ── Tier 2: RIM-CONTACT HEAL (moving circle only, caller-gated) ──
-    let shapes = state.shapes;
-    if (healRims && shape.kind === 'circle') {
-        // The closest rim-vs-lattice-node contact decides the weld; the
-        // rim must be UN-BONDED (never re-snatch a welded rim — the bond
-        // contract beats the heal)
-        let best: {
-            nodeId: string;
-            other: { shapeIndex: number; nodeId: string; point: DrawPoint };
-            distance: number;
-        } | null = null;
-        for (const node of nodes) {
-            if (!RIM_NODE_IDS.includes(node.id)) continue;
-            if (
-                bondsOf(
-                    state.connections,
-                    { shapeIndex: movingIndex, nodeId: node.id },
-                ).length > 0
-            ) {
-                continue; // already welded — never drag it away from its twin
-            }
-            for (const other of others) {
-                if (!isLatticeNodePoint(other.point)) continue;
-                const distance = Math.hypot(
-                    other.point.x - node.point.x,
-                    other.point.y - node.point.y,
-                );
-                if (distance <= RIM_CONTACT_WINDOW && (!best || distance < best.distance)) {
-                    best = { nodeId: node.id, other, distance };
-                }
-            }
-        }
-        if (best) {
-            // Slide the circle so the rim lands EXACTLY on the twin
-            // (translation: the radius stays quantized, the center stays
-            // lattice — the twin is a lattice point by the guard above)
-            const welded = snapShapeNode(shape, best.nodeId, best.other.point);
-            const next = shapes.slice();
-            next[movingIndex] = welded;
-            shapes = next;
-            // Re-read the contacts on the WELDED geometry — every new
-            // coincidence bonds (the welded rim coincides by construction)
-            const weldedNodes = shapeNodes(welded);
-            let bonds = bondsNow();
-            for (const node of weldedNodes) {
-                for (const other of others) {
-                    if (other.point.x === node.point.x && other.point.y === node.point.y) {
-                        bonds = connect(
-                            bonds,
-                            { shapeIndex: movingIndex, nodeId: node.id },
-                            { shapeIndex: other.shapeIndex, nodeId: other.nodeId },
-                        );
-                    }
-                }
-            }
-            return { shapes, connections: bonds };
-        }
-    }
-    // No contact anywhere — the drop stands alone
-    return { shapes: state.shapes, connections: bondsNow() };
+    return { shapes: state.shapes, connections: bonds };
 };
 
 // The shared commit — validates the draft through the builder, commits on
 // success, clears the draft either way. The BUILT shape is re-stamped with
 // the draft's ink: the builders re-project geometry (snapping, min/max
 // normalization) and carry no metadata across. On commit the DROP CHECK
-// (autoConnect) locks coinciding nodes and slides dropped circles onto
-// one-step-away lattice nodes (the move-as-one contract).
+// (autoLock) bonds ONLY exactly-coinciding nodes — the shape commits
+// where the grid contract put it, never pulled toward a neighbor (the
+// move-as-one contract, minus the removed near-drop snapping).
 const commitDraft = (
     context: DrawPluginContext,
     build: () => DrawShape | null,
@@ -264,10 +177,10 @@ const commitDraft = (
     }
     const shapes = [...state.shapes, stamped];
     // The DROP CHECK: every node of the new shape scans for a node at its
-    // position — exact coincidence bonds; a circle dropping its rim near
-    // (≤ one step of) a lattice node slides onto it and welds exactly.
-    // A fresh draw allows the rim heal (the dimensional-rim drop case).
-    const result = autoLock({ ...state, shapes }, shapes.length - 1, true);
+    // EXACT position — only real coincidence bonds (proximity never does:
+    // the user bug report — "drawing close to another shape snapped it
+    // into that shape node for no reason").
+    const result = autoLock({ ...state, shapes }, shapes.length - 1);
     context.drawing({
         ...state,
         shapes: result.shapes,
@@ -277,29 +190,25 @@ const commitDraft = (
 };
 
 // autoLockShapes — the DRAG-RELEASE lock moment for nodeEditorPlugin: runs
-// the SAME drop check that fresh draws use over the SETTLED geometry
+// the SAME exact-contact check a fresh draw gets over the SETTLED geometry
 // ("dragging old shapes into new positions where the nodes share a
 // coordinate must lock too — not just newly drawn shapes").
 // - `movingIndices` — the shapes that moved (the grabbed shape's bond
 //   group for a whole-shape drag, the adjusted shape for a node drag).
-//   Only movers participate; static shapes never bond each other and
-//   static circles never heal.
-// - `healRims` — the dimensional-rim one-step slide. Allowed for
-//   whole-shape drags (a released circle rims onto a lattice node like a
-//   committed drop). FORBIDDEN for node adjustments: the user just sized
-//   the circle deliberately — a heal would teleport it after the fact
-//   (intended locks during adjustments bond per-frame via the
-//   destination scan instead).
-// Idempotent (connect dedupes + the heal guard skips welded rims), so a
-// no-op release re-running it changes nothing.
+//   Only movers participate; static shapes never bond each other.
+// - NO heal: a released shape settles where the drag left it — a NEAR
+//   node (even one grid step away) never slides the geometry onto it
+//   (the no-near-drop-snapping contract; intentional junctions bond
+//   per-frame via the node drag's destination scan instead).
+// Idempotent (connect dedupes), so a no-op release re-running it changes
+// nothing.
 export const autoLockShapes = (
     state: { shapes: DrawShape[]; connections: DrawBond[] },
     movingIndices: number[],
-    healRims: boolean,
 ): { shapes: DrawShape[]; connections: DrawBond[] } => {
     let result = state;
     for (const index of movingIndices) {
-        result = autoLock(result, index, healRims);
+        result = autoLock(result, index);
     }
     return result;
 };
