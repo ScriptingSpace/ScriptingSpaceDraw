@@ -10,7 +10,7 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool-system + node-editor tests for the DrawDashboard: the toolbar
 // (bottom-center, tool-agnostic), the tool plugins (circle, rectangle,
-// line→curve), the router, the drawing layer, the right-side stroke palette,
+// line), the router, the drawing layer, the right-side stroke palette,
 // and the shape node adjustment handles.
 //
 // GRID CONTRACT: the default transform pans the world origin to screen
@@ -139,7 +139,7 @@ describe('toolbar — the tool-agnostic bar', () => {
         expect(screen.getByTestId('tool-rectangle').getAttribute('aria-pressed')).toBe('true');
         fireEvent.keyDown(window, { code: 'KeyR' });
         expect(screen.getByTestId('tool-rectangle').getAttribute('aria-pressed')).toBe('false');
-        // L activates the line (curve)
+        // L activates the line
         fireEvent.keyDown(window, { code: 'KeyL' });
         expect(screen.getByTestId('tool-line').getAttribute('aria-pressed')).toBe('true');
         fireEvent.keyDown(window, { code: 'KeyL' });
@@ -253,15 +253,17 @@ describe('rectangle tool — grid-locked boxes', () => {
     });
 });
 
-describe('line tool — the grid curve', () => {
-    it('a 2-step chord gets the bent default control (curve, not sharp)', () => {
+describe('line tool — the shortest-path line (3 nodes, the 2nd bends it)', () => {
+    it('a 2-step chord commits STRAIGHT (control at the chord midpoint — no auto-bow)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
         fireEvent.click(screen.getByTestId('tool-line'));
         // Press the world origin (screen 400,300); drag 2 steps to (600,300)
-        // = world (200,0). Default control bows to world (100,100) — the
-        // quadratic apex rises half a cell off the chord.
+        // = world (200,0). The default is the SHORTEST PATH: the control
+        // node sits at the chord's midpoint (100,0) — a degenerate Bézier
+        // that renders straight. Curving happens afterwards by dragging
+        // that middle node off the chord.
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 600, clientY: 300 });
         fireEvent.pointerUp(surface, {});
@@ -269,22 +271,23 @@ describe('line tool — the grid curve', () => {
         const shapes = committedElements();
         expect(shapes.length).toBe(1);
         expect(shapes[0].tagName).toBe('path');
-        // Screen projection: start (400,300), control (400+100, 300+100),
+        // Screen projection: start (400,300), control (400+100, 300+0),
         // end (400+200, 300)
-        expect(shapes[0].getAttribute('d')).toBe('M 400 300 Q 500 400 600 300');
+        expect(shapes[0].getAttribute('d')).toBe('M 400 300 Q 500 300 600 300');
     });
 
-    it('a 3-step chord snaps the bend onto the lattice too', () => {
+    it('a 3-step chord commits straight the same way (half-lattice midpoint control)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
         fireEvent.click(screen.getByTestId('tool-line'));
-        // 3 steps: control candidate (150,150) rounds to (200,200)
+        // 3 steps: the control sits at the true midpoint (150,0) — a
+        // HALF-LATTICE point (1.5 steps) — the honest shortest path
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 700, clientY: 300 });
         fireEvent.pointerUp(surface, {});
 
-        expect(committedElements()[0].getAttribute('d')).toBe('M 400 300 Q 600 500 700 300');
+        expect(committedElements()[0].getAttribute('d')).toBe('M 400 300 Q 550 300 700 300');
     });
 
     it('a 1-step chord stays straight (control at the true midpoint)', () => {
@@ -293,7 +296,8 @@ describe('line tool — the grid curve', () => {
 
         fireEvent.click(screen.getByTestId('tool-line'));
         // One diagonal step: (400,300) → (500,400) = world (100,100).
-        // No bend until multiple grid points are spanned.
+        // EVERY length commits the shortest path — the midpoint control
+        // never auto-bows; curving is the user's node drag.
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 500, clientY: 400 });
         fireEvent.pointerUp(surface, {});
@@ -323,10 +327,11 @@ describe('line tool — the grid curve', () => {
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 600, clientY: 300 });
 
-        // The draft is live (dashed) and no committed shape exists yet
+        // The draft is live (dashed) and no committed shape exists yet —
+        // the preview is the STRAIGHT shortest path
         expect(committedElements().length).toBe(0);
         expect(draftElement()).not.toBeNull();
-        expect(draftElement()?.getAttribute('d')).toBe('M 400 300 Q 500 400 600 300');
+        expect(draftElement()?.getAttribute('d')).toBe('M 400 300 Q 500 300 600 300');
 
         fireEvent.pointerUp(surface, {});
         // Draft cleared, shape committed
@@ -764,29 +769,30 @@ describe('node editor — click-drag adjustment of shape nodes', () => {
         expect(readOriginCross()).toEqual({ x: 400, y: 300 });
     });
 
-    it('grabbing a CURVE at its apex moves the whole curve (works while a tool is armed)', () => {
+    it('grabbing the LINE at its stroke moves the whole line (works while a tool is armed)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
-        // 2-step curve start (0,0) control (100,100) end (200,0): the apex
-        // sits at world (100, 50) → screen (500, 350)
+        // 2-step line, straight default: start (0,0) control (100,0)
+        // end (200,0) — the stroke is the flat chord
         fireEvent.click(screen.getByTestId('tool-line'));
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 600, clientY: 300 });
         fireEvent.pointerUp(surface, {});
 
-        // LINE STILL ARMED — pressing the line itself must MOVE, not draw
-        // a new shape on top of it
-        fireEvent.pointerDown(surface, { clientX: 500, clientY: 350, button: 0 });
-        fireEvent.pointerMove(surface, { clientX: 600, clientY: 350 });
+        // LINE STILL ARMED — pressing the line's stroke (world (50,0) →
+        // screen (450,300): 0px off the chord, 50px clear of every node)
+        // must MOVE, not draw a new shape on top of it
+        fireEvent.pointerDown(surface, { clientX: 450, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 550, clientY: 300 });
         fireEvent.pointerUp(surface, {});
 
         expect(committedElements().length).toBe(1); // moved, not duplicated
         const shape = committedElements()[0];
         expect(shape.tagName).toBe('path');
-        // +100 world delta: start (0,0)→(1,0)... start (100,0) → screen
-        // (500,300); control (200,100) → (600,400); end (300,0) → (700,300)
-        expect(shape.getAttribute('d')).toBe('M 500 300 Q 600 400 700 300');
+        // +100 world delta: start (100,0) → screen (500,300); control
+        // (200,0) → (600,300); end (300,0) → (700,300)
+        expect(shape.getAttribute('d')).toBe('M 500 300 Q 600 300 700 300');
     });
 
     it('the grab-move cursor is grabbing while dragging and clears after release', () => {
@@ -863,24 +869,25 @@ describe('node editor — click-drag adjustment of shape nodes', () => {
         expect(committedElements()[0].getAttribute('cy')).toBe('300');
     });
 
-    it('dragging the curve control node re-curves (and can straighten) it', () => {
+    it('dragging the control node BENDS the straight line (the 2nd node is the curve adjust)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
-        // 2-step curve: control at world (100,100) → screen (500,400)
+        // 2-step line, straight default: the midpoint control node sits
+        // ON the chord — world (100,0) → screen (500,300)
         fireEvent.click(screen.getByTestId('tool-line'));
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 600, clientY: 300 });
         fireEvent.pointerUp(surface, {});
         fireEvent.click(screen.getByTestId('tool-line')); // disarm → node drag mode
 
-        // Drag the control node up onto the chord (screen 500,300 =
-        // world (100,0)) — the curve straightens
-        fireEvent.pointerDown(surface, { clientX: 500, clientY: 400, button: 0 });
-        fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+        // Drag the (hollow) control node DOWN off the chord (screen
+        // 500,400 = world (100,100)) — the straight line curves on demand
+        fireEvent.pointerDown(surface, { clientX: 500, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 500, clientY: 400 });
         fireEvent.pointerUp(surface, {});
 
-        expect(committedElements()[0].getAttribute('d')).toBe('M 400 300 Q 500 300 600 300');
+        expect(committedElements()[0].getAttribute('d')).toBe('M 400 300 Q 500 400 600 300');
     });
 
     it('dragging a rect corner keeps the opposite corner fixed (fold-over)', () => {
@@ -1092,12 +1099,13 @@ describe('node editor — click-drag adjustment of shape nodes', () => {
 
 describe('bonded groups — connected shapes move as one', () => {
     // ───────────────────────────────────────────────────────────────────────
-    // Scene: two curves A + B bonded at the shared world point (0,0).
+    // Scene: two straight lines A + B bonded at the shared world point (0,0).
     //
     // A = line grab (100,300)→(400,300): world (−300,0)→(0,0), 3 steps →
-    //   bent control defaultCurveControl((−300,0),(0,0)) = (−100,200).
+    //   control at the chord midpoint (−150,0) — a HALF-LATTICE point
+    //   (1.5 steps; the honest shortest path).
     // B = line grab (700,300)→(400,300): world (300,0)→(0,0), 3 steps →
-    //   control (200,200). B is drawn BOTTOM-UP so its press (700,300)
+    //   control (150,0). B is drawn right-to-left so its press (700,300)
     //   lands far from A's end node (400,300) — pressing the junction
     //   directly would claim A's node grab instead of drawing B.
     // The commit auto-connects B's end (0,0) to A's end (0,0) — one bond
@@ -1120,19 +1128,24 @@ describe('bonded groups — connected shapes move as one', () => {
 
     // After moving the bonded pair by the exact +100,+0 delta (un-snapped,
     // integer screen move):
-    //   A: start (−200,0) control (0,200) end (100,0)
-    //   B: start  (400,0) control (300,−100) end (100,0)
-    // Both curves' endpoints still coincide at world (100,0) — the weld
+    //   A: start (−200,0) control (−50,0) — the half-lattice midpoint
+    //      re-snaps half a cell to (0,0) (the moveShape grid safety net) —
+    //      end (100,0)
+    //   B: start  (400,0) control (250,0) → snaps half a cell to (300,0),
+    //      end (100,0)
+    // Both lines' endpoints still coincide at world (100,0) — the weld
     // rides the group delta.
-    const A_MOVED = 'M 200 300 Q 400 500 500 300';
-    const B_MOVED = 'M 800 300 Q 700 200 500 300';
-    const A_IDLE = 'M 100 300 Q 300 500 400 300';
-    const B_IDLE = 'M 700 300 Q 600 200 400 300';
+    const A_MOVED = 'M 200 300 Q 400 300 500 300';
+    const B_MOVED = 'M 800 300 Q 700 300 500 300';
+    const A_IDLE = 'M 100 300 Q 250 300 400 300';
+    const B_IDLE = 'M 700 300 Q 550 300 400 300';
     // One step LEFT of the originals (dx −100):
-    //   A: start (−400,0) control (−200,200) end (−100,0)
-    //   B: start  (200,0) control  (100,−100) end (−100,0)
-    const A_LEFT = 'M 0 300 Q 200 500 300 300';
-    const B_LEFT = 'M 600 300 Q 500 200 300 300';
+    //   A: start (−400,0) control (−250,0) → snaps HALF A CELL UP (round
+    //      −2.5 → −2) to (−200,0), end (−100,0)
+    //   B: start  (200,0) control (50,0) → snaps half a cell DOWN (round
+    //      0.5 → 1) to (100,0), end (−100,0)
+    const A_LEFT = 'M 0 300 Q 200 300 300 300';
+    const B_LEFT = 'M 600 300 Q 500 300 300 300';
 
     it('placing the cursor ON the bonded node and dragging it out BREAKS the lock (pull-to-break)', () => {
         render(<DrawDashboard />);
@@ -1158,16 +1171,16 @@ describe('bonded groups — connected shapes move as one', () => {
         // everything and the halos vanish
         fireEvent.pointerMove(surface, { clientX: 505, clientY: 300 });
         paths = committedElements().map((p) => p.getAttribute('d'));
-        // B: {start (300,0), control (200,−200), end (100,0)} — its end
+        // B: {start (300,0), control (150,0), end (100,0)} — its end
         // pulled to the snapped pointer point; A: untouched
-        expect(paths).toEqual([A_IDLE, 'M 700 300 Q 600 200 500 300']);
+        expect(paths).toEqual([A_IDLE, 'M 700 300 Q 550 300 500 300']);
         expect(halos().length).toBe(0);
 
         // Fully independent now: the pulled node keeps following like a
         // free node
         fireEvent.pointerMove(surface, { clientX: 605, clientY: 300 });
         paths = committedElements().map((p) => p.getAttribute('d'));
-        expect(paths).toEqual([A_IDLE, 'M 700 300 Q 600 200 600 300']);
+        expect(paths).toEqual([A_IDLE, 'M 700 300 Q 550 300 600 300']);
         expect(halos().length).toBe(0);
         fireEvent.pointerUp(surface, {});
     });
@@ -1177,24 +1190,33 @@ describe('bonded groups — connected shapes move as one', () => {
         const surface = stubSurfaceRect();
         drawBondedPair(surface);
 
-        // Grab A's line at its apex (275,400 — the anchor, world
-        // (−125,100)) then park the pointer at screen x 400 (world 0):
-        // offset +125 → dx 100 on EVERY event
-        fireEvent.pointerDown(surface, { clientX: 275, clientY: 400, button: 0 });
-        const HOLD = { clientX: 400, clientY: 400 };
+        // Grab A's straight stroke midway between the start node and the
+        // junction: world (−125,0) → screen (275,300) (0px off the chord,
+        // 25px clear of A's midpoint control) — then park the pointer at
+        // screen x 400 (world 0): offset +125 → dx 100 on EVERY event
+        fireEvent.pointerDown(surface, { clientX: 275, clientY: 300, button: 0 });
+        const HOLD = { clientX: 400, clientY: 300 };
         fireEvent.pointerMove(surface, HOLD);
         fireEvent.pointerMove(surface, HOLD);
         fireEvent.pointerMove(surface, HOLD);
         let paths = committedElements().map((p) => p.getAttribute('d'));
         expect(paths).toEqual([A_MOVED, B_MOVED]);
 
-        // One screen px right of the press (dx 0): restore originals
-        fireEvent.pointerMove(surface, { clientX: 276, clientY: 400 });
+        // One screen px right of the press (dx 0): the group rebuilds from
+        // its GRAB-TIME snapshot — but the moveShape snap safety net
+        // re-snaps the HALF-LATTICE midpoint controls on EVERY rebuild
+        // (A's (−150,0) → round(−1.5) → (−100,0); B's (150,0) → round(1.5)
+        // → (200,0)), so the restored form differs from the fresh-commit
+        // originals A_IDLE/B_IDLE by those half-cell folds
+        fireEvent.pointerMove(surface, { clientX: 276, clientY: 300 });
         paths = committedElements().map((p) => p.getAttribute('d'));
-        expect(paths).toEqual([A_IDLE, B_IDLE]);
+        expect(paths).toEqual([
+            'M 100 300 Q 300 300 400 300', // A restored (control folded to (−100,0))
+            'M 700 300 Q 600 300 400 300', // B restored (control folded to (200,0))
+        ]);
 
         // Past the anchor leftward (offset −115 → dx −100)
-        fireEvent.pointerMove(surface, { clientX: 160, clientY: 400 });
+        fireEvent.pointerMove(surface, { clientX: 160, clientY: 300 });
         paths = committedElements().map((p) => p.getAttribute('d'));
         expect(paths).toEqual([A_LEFT, B_LEFT]);
         fireEvent.pointerUp(surface, {});
@@ -1206,11 +1228,11 @@ describe('bonded groups — connected shapes move as one', () => {
         drawBondedPair(surface);
         expect(committedElements().length).toBe(2);
 
-        // Grab A's line at its apex: world (−125,100) (0.25·start +
-        // 0.5·control + 0.25·end) → screen (275,400) — distance 0 to A's
-        // stroke, > 160 to every node + B's body
-        fireEvent.pointerDown(surface, { clientX: 275, clientY: 400, button: 0 });
-        fireEvent.pointerMove(surface, { clientX: 375, clientY: 400 });
+        // Grab A's straight stroke: world (−125,0) → screen (275,300) —
+        // distance 0 to A's chord, 25px clear of A's midpoint control,
+        // 125px from the junction, far from B's nodes + stroke
+        fireEvent.pointerDown(surface, { clientX: 275, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 375, clientY: 300 });
         fireEvent.pointerUp(surface, {});
 
         const paths = committedElements().map((p) => p.getAttribute('d'));
@@ -1230,18 +1252,18 @@ describe('bonded groups — connected shapes move as one', () => {
         fireEvent.pointerMove(surface, { clientX: 620, clientY: 300 });
         fireEvent.pointerUp(surface, {});
         let paths = committedElements().map((p) => p.getAttribute('d'));
-        expect(paths).toEqual([A_IDLE, 'M 700 300 Q 600 200 600 300']);
+        expect(paths).toEqual([A_IDLE, 'M 700 300 Q 550 300 600 300']);
         let halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
         expect(halos().length).toBe(0);
 
         // Line-grab A and move +100 — A moves ALONE now, B stays where
         // the break left it (the pair no longer rides together). A's end
         // node now sits at world (100,0) → screen (500,300).
-        fireEvent.pointerDown(surface, { clientX: 275, clientY: 400, button: 0 });
-        fireEvent.pointerMove(surface, { clientX: 375, clientY: 400 });
+        fireEvent.pointerDown(surface, { clientX: 275, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 375, clientY: 300 });
         fireEvent.pointerUp(surface, {});
         paths = committedElements().map((p) => p.getAttribute('d'));
-        expect(paths).toEqual([A_MOVED, 'M 700 300 Q 600 200 600 300']);
+        expect(paths).toEqual([A_MOVED, 'M 700 300 Q 550 300 600 300']);
 
         // Re-verify the connect side: drag B's (freed) end node (600,300)
         // onto A's end (500,300) — the DESTINATION scan finds the twin,
@@ -1254,8 +1276,8 @@ describe('bonded groups — connected shapes move as one', () => {
         halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
         expect(halos().length).toBe(2);
         paths = committedElements().map((p) => p.getAttribute('d'));
-        // B re-welded: {start (300,0), control (200,−200), end (100,0)}
-        expect(paths).toEqual([A_MOVED, 'M 700 300 Q 600 200 500 300']);
+        // B re-welded: {start (300,0), control (150,0), end (100,0)}
+        expect(paths).toEqual([A_MOVED, 'M 700 300 Q 550 300 500 300']);
     });
 
     it('double-clicking the junction severs the bond: shapes move independently', () => {
@@ -1274,8 +1296,8 @@ describe('bonded groups — connected shapes move as one', () => {
         expect(halos().length).toBe(0);
 
         // Now A's line moves ALONE; B keeps the bonded-pair geometry
-        fireEvent.pointerDown(surface, { clientX: 275, clientY: 400, button: 0 });
-        fireEvent.pointerMove(surface, { clientX: 375, clientY: 400 });
+        fireEvent.pointerDown(surface, { clientX: 275, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 375, clientY: 300 });
         fireEvent.pointerUp(surface, {});
         const paths = committedElements().map((p) => p.getAttribute('d'));
         expect(paths).toEqual([A_MOVED, B_IDLE]);
@@ -1311,23 +1333,23 @@ describe('bonded groups — connected shapes move as one', () => {
         // The bond lights the halo on both joined endpoint dots
         expect(halos().length).toBe(2);
 
-        // Grab A's line (apex world (−125,100) → screen (275,400)) and
-        // move +100,+0: the bonded pair travels together. B's arc at that
-        // point crosses toward the junction too — assert the exact result:
-        //   A: {start (−200,0), control (0,200), end (400,0)}
-        //     → 'M 200 300 Q 400 500 800 300'
+        // Grab A's straight stroke (world (−125,0) → screen (275,300)) and
+        // move +100,+0: the bonded pair travels together. Assert the exact
+        // result:
+        //   A: {start (−200,0), control (−50,0) → re-snapped (0,0),
+        //       end (400,0)} → 'M 200 300 Q 400 300 800 300'
         //   B: moveShape re-snaps every vertex — the straight 1-step
         //     control (350,0) drifts half a cell to (350+100 → snap 500):
         //     {start (500,0), control (500,0), end (400,0)}
         //     → 'M 900 300 Q 900 300 800 300'
         // (Both endpoints terminate on the SAME world point (400,0): the
         // weld survives the move.)
-        fireEvent.pointerDown(surface, { clientX: 275, clientY: 400, button: 0 });
-        fireEvent.pointerMove(surface, { clientX: 375, clientY: 400 });
+        fireEvent.pointerDown(surface, { clientX: 275, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 375, clientY: 300 });
         fireEvent.pointerUp(surface, {});
         const paths = committedElements().map((p) => p.getAttribute('d'));
         expect(paths).toEqual([
-            'M 200 300 Q 400 500 800 300',
+            'M 200 300 Q 400 300 800 300',
             'M 900 300 Q 900 300 800 300',
         ]);
     });
@@ -1360,20 +1382,24 @@ describe('bonded groups — connected shapes move as one', () => {
             nodeDots().filter((dot) => dot.getAttribute('r') === '8');
         expect(halos().length).toBe(4);
 
-        // Grab A's body at its apex (world (−125,100) → screen (275,400))
-        // and move +100,+0 — the WHOLE chain (B, A, C) must translate:
-        //   B: {start (400,0), control (300,−100), end (100,0)}
-        //   A: {start (−200,0), control (0,200), end (100,0)}
+        // Grab A's straight stroke midway (world (−125,0) → screen
+        // (275,300): 0px off A's chord, 25px clear of its midpoint
+        // control) and move +100,+0 — the WHOLE chain (B, A, C) must
+        // translate:
+        //   B: {start (400,0), control (250,0) → re-snapped (300,0),
+        //       end (100,0)}
+        //   A: {start (−200,0), control (−50,0) → re-snapped (0,0),
+        //       end (100,0)}
         //   C: {start (−200,100), control (−200,100), end (−200,0)}
-        //     (the straight 1-step control (−300,50) re-snaps half a cell
-        //     to (−200,100) — the moveShape grid safety net)
-        fireEvent.pointerDown(surface, { clientX: 275, clientY: 400, button: 0 });
-        fireEvent.pointerMove(surface, { clientX: 375, clientY: 400 });
+        //     (the half-lattice 1-step control (−300,50) re-snaps half a
+        //     cell to (−200,100) — the moveShape grid safety net)
+        fireEvent.pointerDown(surface, { clientX: 275, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 375, clientY: 300 });
         fireEvent.pointerUp(surface, {});
         const paths = committedElements().map((p) => p.getAttribute('d'));
         expect(paths).toEqual([
-            'M 800 300 Q 700 200 500 300', // B
-            'M 200 300 Q 400 500 500 300', // A
+            'M 800 300 Q 700 300 500 300', // B
+            'M 200 300 Q 400 300 500 300', // A
             'M 200 400 Q 200 400 200 300', // C
         ]);
     });
@@ -1418,9 +1444,9 @@ describe('circle locks — rim nodes bond like any other node', () => {
         expect(shapes[1].getAttribute('cx')).toBe('500');
         expect(shapes[1].getAttribute('cy')).toBe('300');
         expect(shapes[1].getAttribute('r')).toBe('100');
-        // Line: start (300,0), end (200,0) — and the bent 1-step control
-        // (150,0) + 100 = (250,0) re-snaps half a cell to (300,0) (the
-        // moveShape grid safety net) → 'M 700 300 Q 700 300 600 300'
+        // Line: start (300,0), end (200,0) — and the half-lattice 1-step
+        // control (150,0) + 100 = (250,0) re-snaps half a cell to (300,0)
+        // (the moveShape grid safety net) → 'M 700 300 Q 700 300 600 300'
         expect(shapes[0].getAttribute('d')).toBe('M 700 300 Q 700 300 600 300');
         // The junction still welds: rim e (world (200,0)) == L.end (world (200,0))
         expect(halos().length).toBe(2);
@@ -1437,9 +1463,10 @@ describe('circle locks — rim nodes bond like any other node', () => {
         fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
         fireEvent.pointerUp(surface, {});
         // Line L SECOND (index 1): world (200,−200) → (0,−200), a 2-step
-        // chord [press 600,100 → 400,100]: bends DOWN to control
-        // (100,−300). Its end (world (0,−200)) is 100 world units above
-        // the rim node — no commit contact, no bond yet.
+        // chord [press 600,100 → 400,100]: STRAIGHT — control at the
+        // chord midpoint (100,−200). Its end (world (0,−200)) is 100
+        // world units above the rim node (world (0,−100)) — no commit
+        // contact, no bond yet.
         fireEvent.click(screen.getByTestId('tool-line'));
         fireEvent.pointerDown(surface, { clientX: 600, clientY: 100, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 100 });
@@ -1467,26 +1494,31 @@ describe('circle locks — rim nodes bond like any other node', () => {
         expect(shapes[0].getAttribute('cx')).toBe('400');
         expect(shapes[0].getAttribute('cy')).toBe('200');
         expect(shapes[0].getAttribute('r')).toBe('100');
-        // The line never moved
-        expect(shapes[1].getAttribute('d')).toBe('M 600 100 Q 500 0 400 100');
+        // The line never moved — straight: control at the chord midpoint
+        // (100,−200) → screen (500,100)
+        expect(shapes[1].getAttribute('d')).toBe('M 600 100 Q 500 100 400 100');
         // Bond recorded: rim n ↔ L.end
         expect(halos().length).toBe(2);
 
-        // Move as one: grab L's body at its apex (world (100,−250) →
-        // screen (500,50): 0 to the stroke, ≥50px to every node, ≥80px to
-        // the circle stroke) and drag +100:+0 — the circle rides along
-        // with the rim still welded to L's end (world (100,−200))
-        fireEvent.pointerDown(surface, { clientX: 500, clientY: 50, button: 0 });
-        fireEvent.pointerMove(surface, { clientX: 600, clientY: 50 });
+        // Move as one: grab L's STRAIGHT body between the midpoint-control
+        // node (world (100,−200) → screen (500,100)) and the start node
+        // ((200,−200) → screen (600,100)): press (550,100) — 0px off the
+        // chord, 50px clear of both nodes, ≥112px from every circle node —
+        // and drag +100:+0. The circle rides along with the rim still
+        // welded to L's end (world (100,−200)).
+        fireEvent.pointerDown(surface, { clientX: 550, clientY: 100, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 650, clientY: 100 });
         fireEvent.pointerUp(surface, {});
         const moved = committedElements();
         // Circle: center (100,−100) → screen cx 500, cy 200
         expect(moved[0].getAttribute('cx')).toBe('500');
         expect(moved[0].getAttribute('cy')).toBe('200');
         expect(moved[0].getAttribute('r')).toBe('100');
-        // Line: start (300,−200), control (200,−300) (already lattice —
-        // no drift), end (100,−200) == circle rim n (100,−200) ✓
-        expect(moved[1].getAttribute('d')).toBe('M 700 100 Q 600 0 500 100');
+        // Line: start (300,−200), control (200,−200), end (100,−200) ==
+        // circle rim n (100,−200) ✓ — the lattice 2-step midpoint lands
+        // clear of the circle's rim nodes ((200,−100) is rim 'e' — not
+        // (200,−200)), so nothing new bonds
+        expect(moved[1].getAttribute('d')).toBe('M 700 100 Q 600 100 500 100');
         expect(halos().length).toBe(2);
     });
 
@@ -1591,10 +1623,10 @@ describe('circle locks — rim nodes bond like any other node', () => {
         // screen (900,450): 0 to the stroke, ≥45px to every node, far from
         // the line) and drag dx −5 steps dy −1 step: the rect settles at
         // world (0,0)–(100,100) — corner 'a' (min-min, world (0,0)) lands
-        // EXACTLY on the line's END node (0,0). (The line is a 3-step
-        // chord: start (−300,0), bent control (−100,200), end (0,0) — no
-        // other corner touches any of its nodes.) The RELEASE auto-lock
-        // records corner 'a' ↔ line end.
+        // EXACTLY on the line's END node (0,0). (The straight 3-step line:
+        // start (−300,0), midpoint control (−150,0) — HALF-lattice — end
+        // (0,0); no other corner touches any of its nodes.) The RELEASE
+        // auto-lock records corner 'a' ↔ line end.
         fireEvent.pointerDown(surface, { clientX: 900, clientY: 450, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 350 });
         fireEvent.pointerUp(surface, {});
@@ -1603,14 +1635,14 @@ describe('circle locks — rim nodes bond like any other node', () => {
         const halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
         expect(halos().length).toBe(2);
 
-        // The lock is real: grab the LINE's body at its apex — world
-        // (−125,100): 0.25·start + 0.5·control + 0.25·end → screen
-        // (275,400) (0px off the stroke, ≥58px to every node and ≥…px to
-        // the rect body) — and move +100:+0. The bond group carries the
-        // RECT: it rides +100 with the line (pan untouched — the origin
-        // stays at (400,300)).
-        fireEvent.pointerDown(surface, { clientX: 275, clientY: 400, button: 0 });
-        fireEvent.pointerMove(surface, { clientX: 375, clientY: 400 });
+        // The lock is real: grab the LINE's straight body midway between
+        // the start node and the midpoint control — world (−125,0) →
+        // screen (275,300): 0px off the chord, 25px clear of the control
+        // node, 125px from the junction corner — and move +100:+0. The
+        // bond group carries the RECT: it rides +100 with the line (pan
+        // untouched — the origin stays at (400,300)).
+        fireEvent.pointerDown(surface, { clientX: 275, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 375, clientY: 300 });
         fireEvent.pointerUp(surface, {});
         const moved = committedElements();
         // Rect: min (100,0) → screen x 500, y 300

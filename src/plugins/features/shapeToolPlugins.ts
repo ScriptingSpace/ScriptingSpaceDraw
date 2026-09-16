@@ -8,12 +8,14 @@
 //   center under the hand)
 // - RECTANGLE: press + current = opposite corners (normalized min/max —
 //   drag in any direction)
-// - LINE: press = start, current = end — but "more like curve": the shape
-//   is a quadratic Bézier (see functions/shapes.ts createCurveShape). A
-//   chord across a single grid step stays straight; a chord across
-//   MULTIPLE grid points is bowed by the default control node — "gets
-//   curve instead of sharp". The curve's control node stays adjustable
-//   afterwards (cross-reference: nodeEditorPlugin.tsx).
+// - LINE: press = start, current = end — the SHORTEST PATH default
+//   (createCurveShape in functions/shapes.ts): the committed shape is a
+//   quadratic Bézier whose control node sits at the chord's exact
+//   midpoint — geometrically straight. THREE nodes come with it:
+//   start / control (hollow — the bend) / end; the user curves the line
+//   afterwards by drilling the control node off the chord (the old
+//   curve-tool behavior, now opt-in). Cross-reference:
+//   nodeEditorPlugin.tsx (the adjustment gestures).
 //
 // GRID CONTRACT (user: "This isn't free form, it is according the grid. All
 // Circle, Rectangle and Lines must snapped to the grid points."): every
@@ -76,9 +78,9 @@ import type { DrawPlugin, DrawPluginContext } from '../core';
 // Icons (24×24 viewbox paths)
 const CIRCLE_ICON = 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z';
 const RECT_ICON = 'M4 5h16v14H4z';
-// Line icon — a bent segment (the tool draws a quadratic curve, not a
-// rigid straight line)
-const CURVE_ICON = 'M4 19Q12 3 20 19';
+// Line icon — a straight diagonal (the tool's shortest-path default; the
+// middle node that bends it is an invisible affordance)
+const LINE_ICON = 'M4 20L20 4';
 
 // The shared drag-draft writer — sets the draft shape for the current drag,
 // STAMPED with the active ink (context.drawing().color). Raw geometry in,
@@ -314,10 +316,12 @@ export const rectangleToolPlugin = mountOf(
     () => undefined,
 ) satisfies DrawPlugin;
 
-// ── LINE TOOL (CURVE) ──
+// ── LINE TOOL ──
 // Press = start, live pointer = end; both anchors snap to the grid and the
-// chord's default control node bows multi-step chords ("curve instead of
-// sharp" — the pure geometry lives in createCurveShape)
+// default geometry is the SHORTEST PATH — the control node sits at the
+// chord's midpoint, rendering a straight line (the pure geometry lives in
+// createCurveShape). The bend is opt-in: the user drags the line's middle
+// (hollow) control node off the chord afterwards.
 export const lineToolPlugin = mountOf(
     (context: DrawPluginContext) => {
         // The pressed anchor (see circleToolPlugin — closure state)
@@ -325,7 +329,7 @@ export const lineToolPlugin = mountOf(
         context.tools.register({
             id: 'line',
             label: 'Line',
-            icon: CURVE_ICON,
+            icon: LINE_ICON,
             shortcut: 'KeyL',
             handlers: {
                 onDragStart: (start: DrawPoint) => {
@@ -340,11 +344,11 @@ export const lineToolPlugin = mountOf(
                 },
                 onDragMove: (current: DrawPoint) => {
                     const pressPoint = press ?? snapToGrid(current);
-                    // The builder snaps the endpoint + re-derives the
-                    // default control (straight for 1 step, bent for
-                    // multi-step chords); null (no cell crossed yet) clears
-                    // the draft — the dashed preview appears a half-cell
-                    // away from the anchor, never before
+                    // The builder snaps the endpoint and derives the
+                    // midpoint control — a straight (shortest-path) draft;
+                    // null (no cell crossed yet) clears the draft — the
+                    // dashed preview appears a half-cell away from the
+                    // anchor, never before
                     writeDraft(context, createCurveShape(pressPoint, current));
                 },
                 onDragEnd: (end: DrawPoint) => {

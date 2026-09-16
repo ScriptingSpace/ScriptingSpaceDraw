@@ -3,7 +3,6 @@ import {
     createCircleShape,
     createCurveShape,
     createRectShape,
-    defaultCurveControl,
     quantizeRadius,
     adjustShape,
     distanceToShape,
@@ -30,52 +29,44 @@ describe('shapes — snap + quantize helpers', () => {
         expect(quantizeRadius(149)).toBe(100);
         expect(quantizeRadius(280)).toBe(300);
     });
-
-    it('defaultCurveControl bows perpendicular by half the chord, snapped', () => {
-        // Horizontal chord (0,0) → (200,0): mid (100,0), perp (0,1),
-        // bend 100 → candidate (100, 100) — already on the grid
-        expect(defaultCurveControl({ x: 0, y: 0 }, { x: 200, y: 0 })).toEqual({
-            x: 100,
-            y: 100,
-        });
-    });
-
-    it('defaultCurveControl snaps the bend onto the lattice for odd chords', () => {
-        // Chord (0,0) → (300,0): mid (150,0), candidate (150,150) → snaps
-        // to (200,200) (Math.round(1.5) = 2 in both axes)
-        expect(defaultCurveControl({ x: 0, y: 0 }, { x: 300, y: 0 })).toEqual({
-            x: 200,
-            y: 200,
-        });
-    });
 });
 
-describe('shapes — createCurveShape (the Line tool draws a curve)', () => {
+describe('shapes — createCurveShape (the Line tool: shortest-path default)', () => {
     it('snaps both anchors to the grid points', () => {
         // (83, 91) → snaps to (100,100); (521, 100) → snaps to (500,100).
-        // Four steps → bent control: mid (300,100) + perpendicular bend
-        // (chord/2 = 200) → (300, 300) — already on the lattice
+        // FOUR steps — and the default is STILL the shortest path: the
+        // control sits at the chord's exact midpoint (300,100).
         expect(createCurveShape({ x: 83, y: 91 }, { x: 521, y: 100 })).toEqual({
             kind: 'curve',
             start: { x: 100, y: 100 },
-            control: { x: 300, y: 300 },
+            control: { x: 300, y: 100 },
             end: { x: 500, y: 100 },
         });
     });
 
-    it('multi-step chords get the bent default control (curve, not sharp)', () => {
-        // Two horizontal steps: control bows to (100,100)
+    it('multi-step chords commit STRAIGHT (control at the chord midpoint — no auto-bow)', () => {
+        // Two horizontal steps: control = midpoint (100,0) — a degenerate
+        // Bézier that renders the straight shortest path. Curving is the
+        // user's opt-in node drag, never the default.
         expect(createCurveShape({ x: 0, y: 0 }, { x: 200, y: 0 })).toEqual({
             kind: 'curve',
             start: { x: 0, y: 0 },
-            control: { x: 100, y: 100 },
+            control: { x: 100, y: 0 },
             end: { x: 200, y: 0 },
+        });
+        // An odd-step chord: the true midpoint is HALF-LATTICE ((150,0) of
+        // a 3-step chord) — the honest shortest path, no snap nudge
+        expect(createCurveShape({ x: 0, y: 0 }, { x: 300, y: 0 })).toEqual({
+            kind: 'curve',
+            start: { x: 0, y: 0 },
+            control: { x: 150, y: 0 },
+            end: { x: 300, y: 0 },
         });
     });
 
     it('single-step chords stay straight (control at the true midpoint)', () => {
-        // One horizontal step — no bend yet. (40,10)→snap (0,0);
-        // (140,20)→snap (100,0); control = true midpoint (50,0)
+        // One horizontal step — (40,10)→snap (0,0); (140,20)→snap (100,0);
+        // control = true midpoint (50,0)
         expect(createCurveShape({ x: 40, y: 10 }, { x: 140, y: 20 })).toEqual({
             kind: 'curve',
             start: { x: 0, y: 0 },
@@ -146,11 +137,11 @@ describe('shapes — createRectShape', () => {
 });
 
 describe('shapes — shapeNodes (adjustment handles)', () => {
-    it('a curve exposes start + hollow control + end', () => {
+    it('a curve (the Line tool) exposes start + hollow control + end — 3 nodes', () => {
         const shape = createCurveShape({ x: 0, y: 0 }, { x: 200, y: 0 })!;
         expect(shapeNodes(shape)).toEqual([
             { id: 'start', point: { x: 0, y: 0 } },
-            { id: 'control', point: { x: 100, y: 100 }, hollow: true },
+            { id: 'control', point: { x: 100, y: 0 }, hollow: true },
             { id: 'end', point: { x: 200, y: 0 } },
         ]);
     });
@@ -180,24 +171,26 @@ describe('shapes — shapeNodes (adjustment handles)', () => {
 describe('shapes — adjustShape (node drags)', () => {
     it('curve: dragging an endpoint snaps it and keeps other nodes absolute', () => {
         const shape = createCurveShape({ x: 0, y: 0 }, { x: 200, y: 0 })!;
-        // Drag the end toward (400, 300) → snaps to (400, 300); control
-        // stays where the shape's curve put it
+        // Drag the end toward (400, 300) → snaps to (400, 300); the
+        // midpoint control stays absolute (the line stays straight-only
+        // if the user pulled the end along the chord)
         expect(adjustShape(shape, 'end', { x: 400, y: 300 })).toEqual({
             kind: 'curve',
             start: { x: 0, y: 0 },
-            control: { x: 100, y: 100 },
+            control: { x: 100, y: 0 },
             end: { x: 400, y: 300 },
         });
     });
 
-    it('curve: dragging the bend node re-curves it (snapped)', () => {
+    it('curve: dragging the bend node re-curves it (snapped) — the opt-in curve adjust', () => {
         const shape = createCurveShape({ x: 0, y: 0 }, { x: 200, y: 0 })!;
-        // Drag the control toward (150, -45) → snaps to (200, 0)... on the
-        // chord line → straightens the curve
-        expect(adjustShape(shape, 'control', { x: 150, y: -45 })).toEqual({
+        // The straight default (control (100,0)); dragging the control
+        // toward (150, 155) → snaps to (200,200)... off the chord — the
+        // user's intentional curve
+        expect(adjustShape(shape, 'control', { x: 150, y: 155 })).toEqual({
             kind: 'curve',
             start: { x: 0, y: 0 },
-            control: { x: 200, y: 0 },
+            control: { x: 200, y: 200 },
             end: { x: 200, y: 0 },
         });
     });
@@ -272,7 +265,9 @@ describe('shapes — moveShape (whole-shape grab-move)', () => {
         expect(moveShape(shape, 100, 100)).toEqual({
             kind: 'curve',
             start: { x: 100, y: 100 },
-            control: { x: 200, y: 200 },
+            // The lattice control + lattice delta = lattice control (the
+            // re-snap safety net changes nothing here)
+            control: { x: 200, y: 100 },
             end: { x: 300, y: 100 },
         });
     });
@@ -296,14 +291,14 @@ describe('shapes — moveShape (whole-shape grab-move)', () => {
 });
 
 describe('shapes — distanceToShape (the line-grab hit test)', () => {
-    it('measures the curve by its geometry (apex is closest)', () => {
+    it('measures the line by its geometry (a straight chord — distance off the stroke)', () => {
         const shape = createCurveShape({ x: 0, y: 0 }, { x: 200, y: 0 })!;
-        // The apex sits at (100, 50) (control at (100,100) pulls t=½ up by
-        // half the control offset) — measure 0 there, 50 from the apex back
-        // onto the chord line, and > 60 far away
-        expect(distanceToShape(shape, { x: 100, y: 50 })).toBeCloseTo(0, 6);
-        expect(distanceToShape(shape, { x: 100, y: 100 })).toBeCloseTo(50, 4);
-        expect(distanceToShape(shape, { x: 100, y: 160 })).toBeGreaterThan(60);
+        // The midpoint control makes a degenerate (straight) Bézier: the
+        // stroke is the segment (0,0)–(200,0); distances are plain
+        // orthogonal projections
+        expect(distanceToShape(shape, { x: 100, y: 0 })).toBeCloseTo(0, 6);
+        expect(distanceToShape(shape, { x: 100, y: 100 })).toBeCloseTo(100, 4);
+        expect(distanceToShape(shape, { x: 100, y: 160 })).toBeCloseTo(160, 4);
     });
 
     it('measures a circle by the rim (radius offset)', () => {
@@ -359,7 +354,7 @@ describe('shapes — snapShapeNode (exact bond welds)', () => {
         expect(welded).toEqual({
             kind: 'curve',
             start: { x: 0, y: 0 },
-            control: { x: 100, y: 100 }, // the bend stays absolute
+            control: { x: 100, y: 0 }, // the (straight) control stays absolute
             end: { x: 300, y: 0 },
         });
         expect(shapeNodes(welded).find((node) => node.id === 'end')?.point).toEqual({
@@ -387,7 +382,7 @@ describe('shapes — shapeToScreen (world → screen projection)', () => {
         expect(shapeToScreen(shape, TRANSFORM_1)).toEqual({
             kind: 'curve',
             start: { x: 400, y: 300 },
-            control: { x: 500, y: 400 },
+            control: { x: 500, y: 300 }, // the straight midpoint control
             end: { x: 600, y: 300 },
             color: '#f7768e',
         });

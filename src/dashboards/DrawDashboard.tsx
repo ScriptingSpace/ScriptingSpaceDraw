@@ -91,8 +91,9 @@ import { createDrawingState } from '../plugins/core/DrawPluginContext';
 //     toolbarPlugin         — bottom-center tool buttons (tool-agnostic)
 //     colorPalettePlugin    — right-side stroke palette (while a tool is
 //                             armed; writes context.drawing().color)
-//     …tool plugins         — circle / rectangle / line (curve) — all
-//                             grid-locked ("This isn't free form")
+//     …tool plugins         — circle / rectangle / line (straight by
+//                             default — the middle node bends it; all
+//                             grid-locked, "This isn't free form")
 //     nodeEditorPlugin      — shape node handles + click-drag adjustment
 //                             (registers BEFORE tool-router so a node grab
 //                             can swallow the press via

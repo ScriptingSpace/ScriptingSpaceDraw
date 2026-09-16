@@ -237,7 +237,7 @@ describe('connection — twinPoint (resolve the other side of a bond)', () => {
         expect(movedB).toEqual({
             kind: 'curve',
             start: { x: 100, y: 0 },
-            control: { x: 300, y: 100 }, // B's original control (kept absolute)
+            control: { x: 300, y: 0 }, // B's original (straight) control (kept absolute)
             end: { x: 400, y: 0 },
         });
         expect(twinPoint([curveA, movedB, circle, rectShape], bonds, {

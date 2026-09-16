@@ -13,12 +13,17 @@
 //   snapToGrid (cross-reference: canvasTransform.ts) so they land ON grid
 //   intersections. Circle radii quantize to whole grid steps so the four
 //   cardinal points of a circle sit on grid points too.
-// - The LINE tool draws a CURVE (user: "Line ... more like curve"): a
-//   quadratic Bézier between the snapped endpoints. A chord spanning ONE
-//   grid step stays straight; a chord spanning MULTIPLE grid points "gets
-//   curve instead of sharp" — the default control node bows perpendicular
-//   to the chord by half the chord length (the curve apex rises ¼ chord).
-//   The control node stays adjustable after the fact (see adjustShape).
+// - LINE = SHORTEST PATH FIRST (user: "update the curve tool to line tool,
+//   3 nodes where the 2nd node behaves like the curve tool — change its
+//   default behavior to the shortest path possible, and the user can
+//   adjust to make it curved if needed"): the Line tool still stores a
+//   quadratic Bézier (kind 'curve' — the 3-node data carrier: start /
+//   control / end, the grid contract demands lattice-aligned geometry),
+//   but the DEFAULT control node sits at the chord's EXACT MIDPOINT — a
+//   degenerate Bézier that renders a geometrically straight line. There
+//   is NO automatic bowing anymore; CURVING is an OPT-IN gesture: grab
+//   the hollow control node (the 2nd node) and drag it off the chord
+//   (adjustShape re-bends the Bézier — the old curve-tool behavior).
 //
 // SHAPE SET:
 // - `curve` — start/control/end quadratic Bézier (the Line tool + its
@@ -59,8 +64,8 @@ export type DrawPoint = { x: number; y: number };
 type DrawShapeColor = { color?: string };
 
 // The curve — a quadratic Bézier: start and end are grid-snapped anchors;
-// control is the bend node (midpoint of the chord = straight; offset =
-// curved). The Line tool draws this shape ("more like curve").
+// control is the bend node (midpoint of the chord = straight — the Line
+// tool's default; offset = curved, the opt-in user adjust).
 export type DrawCurveShape = DrawShapeColor & {
     kind: 'curve';
     start: DrawPoint;
@@ -96,30 +101,13 @@ export type DrawShape = DrawCurveShape | DrawCircleShape | DrawRectShape;
 export const quantizeRadius = (distance: number, spacing: number = BASE_SPACING): number =>
     Math.max(0, Math.round(distance / spacing)) * spacing;
 
-// defaultCurveControl — the "curve instead of sharp" default for the
-// Line tool. The chord's midpoint, offset PERPENDICULAR to the chord by
-// half the chord length (quadratic Bézier apex = ¼ chord off the chord),
-// then snapped to the grid lattice — the bend always clears the chord by
-// ≥ half a cell once snapped. The perpendicular direction (−dy, dx) is a
-// fixed 90° hand (screen-space: chords running right bow downward), so the
-// default curvature is deterministic and reproducible.
-export const defaultCurveControl = (start: DrawPoint, end: DrawPoint): DrawPoint => {
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    const chord = Math.hypot(dx, dy);
-    const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
-    if (chord === 0) return mid;
-    return snapToGrid({
-        x: mid.x + (-dy / chord) * (chord / 2),
-        y: mid.y + (dx / chord) * (chord / 2),
-    });
-};
-
-// createCurveShape — a grid line between two endpoints. Both anchors snap
-// to the lattice; a chord spanning ZERO steps (the drag never crossed a
-// half-cell toward another intersection) is discarded; ONE step renders a
-// straight segment (control at the exact chord midpoint); MULTIPLE steps
-// get the bent default control ("curve instead of sharp").
+// createCurveShape — the LINE tool builder: a grid line between two
+// endpoints. Both anchors snap to the lattice; a chord spanning ZERO
+// steps (the drag never crossed a half-cell toward another intersection)
+// is discarded. The control node is the chord's TRUE MIDPOINT for EVERY
+// chord length — the shortest-path default (a degenerate quadratic Bézier
+// renders straight). Curving is opt-in afterwards: the user drags the
+// control node off the chord (adjustShape — the node editor plugin).
 export const createCurveShape = (
     start: DrawPoint,
     end: DrawPoint,
@@ -128,13 +116,7 @@ export const createCurveShape = (
     const s = snapToGrid(start, spacing);
     const e = snapToGrid(end, spacing);
     if (gridSteps(e.x - s.x, e.y - s.y, spacing) === 0) return null;
-    // Multi-step chord → curved (the grid contract); single-step chord →
-    // control stays at the true midpoint (perfectly straight segment).
-    const control =
-        gridSteps(e.x - s.x, e.y - s.y, spacing) >= 2
-            ? defaultCurveControl(s, e)
-            : { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 };
-    return { kind: 'curve', start: s, control, end: e };
+    return { kind: 'curve', start: s, control: { x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 }, end: e };
 };
 
 // createCircleShape — center snaps to the nearest grid point; the radius is
@@ -308,7 +290,7 @@ export const shapeToScreen = (
 
 // A shape node: a stable handle id + the world point it currently pins.
 // `hollow` marks the curve control node (rendered as a ring — it bends the
-// curve instead of moving geometry).
+// line instead of moving geometry).
 export type DrawShapeNode = { id: string; point: DrawPoint; hollow?: boolean };
 
 // shapeNodes — every adjustable handle of a shape. The node editor plugin
