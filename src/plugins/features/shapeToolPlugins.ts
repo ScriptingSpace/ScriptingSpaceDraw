@@ -32,6 +32,14 @@
 // creation-time color. The builders are pure geometry — they drop metadata,
 // so commitDraft re-stamps from the draft after building.
 //
+// AUTO-CONNECT AT COMMIT (cross-reference: functions/connection.ts +
+// nodeEditorPlugin's move-as-one contract): when a new shape commits with
+// an endpoint ON ANOTHER SHAPE'S endpoint (they snap to the same grid
+// point), a bond is recorded in drawing state — connected shapes MOVE AS
+// ONE UNIT until the user drags the junction away (the node editor's break
+// gesture). Only round-trip endpoint nodes join (curve start/end, circle
+// center, rect corners — isEndpointNode).
+//
 // SHORTCUTS: KeyC (circle), KeyR (rectangle), KeyL (line/curve) — via
 // toolRouter.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -41,8 +49,11 @@ import {
     createCurveShape,
     createRectShape,
     quantizeRadius,
+    shapeNodes,
     snapToGrid,
 } from '../../functions/shapes';
+import { connect, isEndpointNode } from '../../functions/connection';
+import type { DrawBond } from '../../functions/connection';
 import type { DrawPoint, DrawShape } from '../../functions/shapes';
 import { mountOf } from '../core/DrawPluginRegistry';
 import type { DrawPlugin, DrawPluginContext } from '../core';
@@ -71,26 +82,67 @@ const writeDraft = (context: DrawPluginContext, draft: DrawShape | null) => {
     } as never);
 };
 
+// connectOnCommit — scan the NEW shape's endpoint nodes against every
+// existing shape's endpoint nodes: any pair sharing an exact grid point
+// bonds (the new shape is always the LAST index). Returns the extended
+// bonds array (or the untouched original when no contact).
+const connectOnCommit = (
+    state: { shapes: DrawShape[]; connections: DrawBond[] },
+    newIndex: number,
+): DrawBond[] => {
+    let bonds = state.connections;
+    const before = bonds.length;
+    const newShape = state.shapes[newIndex];
+    for (const node of shapeNodes(newShape)) {
+        if (!isEndpointNode(newShape, node.id)) continue;
+        for (let s = 0; s < newIndex; s++) {
+            for (const other of shapeNodes(state.shapes[s])) {
+                if (!isEndpointNode(state.shapes[s], other.id)) continue;
+                // EXACT grid-point contact (both builders snap — equal
+                // coordinates)
+                if (other.point.x === node.point.x && other.point.y === node.point.y) {
+                    bonds = connect(bonds, { shapeIndex: newIndex, nodeId: node.id }, {
+                        shapeIndex: s,
+                        nodeId: other.id,
+                    });
+                }
+            }
+        }
+    }
+    return bonds;
+};
+
 // The shared commit — validates the draft through the builder, commits on
 // success, clears the draft either way. The BUILT shape is re-stamped with
 // the draft's ink: the builders re-project geometry (snapping, min/max
-// normalization) and carry no metadata across.
+// normalization) and carry no metadata across. On commit, endpoint contact
+// with EXISTING shapes auto-connects (the move-as-one contract).
 const commitDraft = (
     context: DrawPluginContext,
     build: () => DrawShape | null,
 ) => {
     const state = context.drawing() as {
-        shapes: unknown[];
+        shapes: DrawShape[];
         drawing: boolean;
         draft: DrawShape | null;
+        connections: DrawBond[];
     };
     const shape = build();
     // Stamp the CREATION-TIME ink from the draft onto the built shape
     const stamped =
         shape && state.draft?.color ? ({ ...shape, color: state.draft.color } as DrawShape) : shape;
+    if (!stamped) {
+        context.drawing({ ...state, draft: null } as never);
+        return;
+    }
+    const shapes = [...state.shapes, stamped];
+    // Endpoints sitting exactly on an existing shape's endpoint bond now —
+    // the new shape MOVES AS ONE with those partners from birth
+    const connections = connectOnCommit({ ...state, shapes }, shapes.length - 1);
     context.drawing({
         ...state,
-        shapes: stamped ? [...state.shapes, stamped] : state.shapes,
+        shapes,
+        connections,
         draft: null,
     } as never);
 };

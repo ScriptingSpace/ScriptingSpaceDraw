@@ -33,6 +33,7 @@ import type { CanvasTransform } from '../../functions/canvasTransform';
 import type { DrawPalette } from '../../functions/palette';
 import { PALETTE_ACCENT } from '../../functions/palette';
 import type { DrawShape } from '../../functions/shapes';
+import type { DrawBond } from '../../functions/connection';
 import type { DrawToolRegistry } from './DrawToolRegistry';
 
 // Pointer state — written by the pointer core plugin on every pointer event.
@@ -106,6 +107,12 @@ export type DrawDrawingState = {
     // writing the draft); the committed shape keeps the creation-time ink.
     // Written by the colorPalettePlugin's swatch buttons.
     color: string;
+    // The ENDPOINT BONDS (cross-reference: functions/connection.ts) — two
+    // shapes sharing an endpoint MOVE AS ONE UNIT until the user breaks
+    // the node. Plain data (shapeIndex + nodeId pairs), resolved against
+    // the shapes array at query time. Written by the shape tools (auto-
+    // connect on commit) and nodeEditorPlugin (break / re-connect).
+    connections: DrawBond[];
 };
 
 // Initial drawing state — the DEFAULT ink is the palette's primary accent
@@ -117,6 +124,7 @@ export const createDrawingState = (): DrawDrawingState => ({
     drawing: false,
     adjusting: false,
     color: PALETTE_ACCENT,
+    connections: [],
 });
 // The context bundle itself
 export type DrawPluginContext = {
