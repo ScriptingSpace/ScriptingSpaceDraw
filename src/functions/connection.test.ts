@@ -9,18 +9,19 @@ import {
     breakAt,
     breakAllTouchingShape,
     twinPoint,
-    isEndpointNode,
 } from './connection';
 import type { DrawBond, BondEndpoint } from './connection';
 import { createCurveShape, createCircleShape, shapeNodes, adjustShape } from './shapes';
 import type { DrawShape } from './shapes';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit tests for functions/connection.ts — the endpoint bond graph.
+// Unit tests for functions/connection.ts — the node bond graph.
 //
 // Fixtures build REAL shapes so bonds resolve through shapeNodes (geometry
-// is the single truth — the graph carries no coordinates). All expectations
-// below are exact.
+// is the single truth — the graph carries no coordinates). ALL nodes of
+// every shape participate (the "move as one" contract): curve
+// start/control/end, circle center + e/s/w/n rim, rect corners. All
+// expectations below are exact.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Two curves sharing grid point (200, 0): A's END bonds B's START
@@ -50,23 +51,28 @@ const rectShape = {
 const shapes: DrawShape[] = [curveA, curveB, circle, rectShape];
 const bonds: DrawBond[] = [AB, BC];
 
-describe('connection — isEndpointNode (which nodes can bond)', () => {
-    it('curve: start/end bond, the control bend never bonds', () => {
-        expect(isEndpointNode(curveA, 'start')).toBe(true);
-        expect(isEndpointNode(curveA, 'end')).toBe(true);
-        expect(isEndpointNode(curveA, 'control')).toBe(false);
+describe('connection — the bondable node set (every node locks)', () => {
+    it('a curve exposes 3 bondable nodes, a circle 5, a rect 4 — shapeNodes is the node space', () => {
+        expect(shapeNodes(curveA).map((node) => node.id)).toEqual(['start', 'control', 'end']);
+        expect(shapeNodes(circle).map((node) => node.id)).toEqual([
+            'center',
+            'e',
+            's',
+            'w',
+            'n',
+        ]);
+        expect(shapeNodes(rectShape).map((node) => node.id)).toEqual(['a', 'b', 'c', 'd']);
     });
 
-    it('circle: the center bonds, the radius edge never does', () => {
-        expect(isEndpointNode(circle, 'center')).toBe(true);
-        expect(isEndpointNode(circle, 'radius')).toBe(false);
-    });
-
-    it('rect: all four corners bond', () => {
-        expect(isEndpointNode(rectShape, 'a')).toBe(true);
-        expect(isEndpointNode(rectShape, 'b')).toBe(true);
-        expect(isEndpointNode(rectShape, 'c')).toBe(true);
-        expect(isEndpointNode(rectShape, 'd')).toBe(true);
+    it('any node id rides the graph: a bond on a rect corner resolves like a curve end', () => {
+        const cornerBond: DrawBond = [
+            { shapeIndex: 3, nodeId: 'c' },
+            { shapeIndex: 0, nodeId: 'start' },
+        ];
+        expect(twinPoint(shapes, [cornerBond], { shapeIndex: 3, nodeId: 'c' })).toEqual({
+            twin: { shapeIndex: 0, nodeId: 'start' },
+            point: { x: 0, y: 0 }, // curveA's start
+        });
     });
 });
 

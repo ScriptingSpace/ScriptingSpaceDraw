@@ -9,6 +9,7 @@ import {
     distanceToShape,
     shapeInk,
     shapeNodes,
+    snapShapeNode,
     moveShape,
     shapeToScreen,
 } from './shapes';
@@ -154,11 +155,14 @@ describe('shapes — shapeNodes (adjustment handles)', () => {
         ]);
     });
 
-    it('a circle exposes its center and the radius edge node (3 o\'clock)', () => {
+    it('a circle exposes FIVE nodes: the center + the four cardinal rim points', () => {
         const shape = createCircleShape({ x: 400, y: 300 }, { x: 500, y: 300 })!;
         expect(shapeNodes(shape)).toEqual([
             { id: 'center', point: { x: 400, y: 300 } },
-            { id: 'radius', point: { x: 500, y: 300 } },
+            { id: 'e', point: { x: 500, y: 300 } }, // 3 o'clock
+            { id: 's', point: { x: 400, y: 400 } }, // 6 o'clock
+            { id: 'w', point: { x: 300, y: 300 } }, // 9 o'clock
+            { id: 'n', point: { x: 400, y: 200 } }, // 12 o'clock
         ]);
     });
 
@@ -207,19 +211,39 @@ describe('shapes — adjustShape (node drags)', () => {
         });
     });
 
-    it('circle: dragging the radius node re-quantizes with a 1-step floor', () => {
+    it('circle: dragging a rim node re-quantizes with a 1-step floor (every rim handle works)', () => {
         const shape = createCircleShape({ x: 400, y: 300 }, { x: 500, y: 300 })!;
-        // Pointer at raw distance 38 → below half a cell → clamped to 1 step
-        expect(adjustShape(shape, 'radius', { x: 438, y: 300 })).toEqual({
+        // East rim: pointer at raw distance 38 → below half a cell →
+        // clamped to 1 step
+        expect(adjustShape(shape, 'e', { x: 438, y: 300 })).toEqual({
             kind: 'circle',
             center: { x: 400, y: 300 },
             radius: 100,
         });
-        // Pointer at raw distance 260 → 3 steps
-        expect(adjustShape(shape, 'radius', { x: 660, y: 300 })).toEqual({
+        // East rim: pointer at raw distance 260 → 3 steps
+        expect(adjustShape(shape, 'e', { x: 660, y: 300 })).toEqual({
             kind: 'circle',
             center: { x: 400, y: 300 },
             radius: 300,
+        });
+        // North rim behaves identically (drag direction irrelevant — the
+        // radius is the center→pointer distance): pointer 220 up → 2 steps
+        expect(adjustShape(shape, 'n', { x: 400, y: 80 })).toEqual({
+            kind: 'circle',
+            center: { x: 400, y: 300 },
+            radius: 200,
+        });
+        // West rim: the mirrored 3-step drag
+        expect(adjustShape(shape, 'w', { x: 140, y: 300 })).toEqual({
+            kind: 'circle',
+            center: { x: 400, y: 300 },
+            radius: 300,
+        });
+        // South rim: mirrored 2-step drag
+        expect(adjustShape(shape, 's', { x: 400, y: 520 })).toEqual({
+            kind: 'circle',
+            center: { x: 400, y: 300 },
+            radius: 200,
         });
     });
 
@@ -301,6 +325,57 @@ describe('shapes — distanceToShape (the line-grab hit test)', () => {
         const shape = createCircleShape({ x: 400, y: 300 }, { x: 500, y: 300 })!;
         expect(shapeInk(shape, '#a9b1d6')).toBe('#a9b1d6');
         expect(shapeInk({ ...shape, color: '#f7768e' }, '#a9b1d6')).toBe('#f7768e');
+    });
+});
+
+describe('shapes — snapShapeNode (exact bond welds)', () => {
+    const circle = createCircleShape({ x: 10, y: 10 }, { x: 110, y: 10 })!; // center (0,0), r 100
+
+    it('welds a circle RIM node onto a DIAGONAL twin by translating the circle (exact, not quantized)', () => {
+        // Twin (100,100) sits step·√2 from the center (141.4) — adjustShape's
+        // radius re-quantization could never reach it. The weld rolls the
+        // whole circle so the rim lands EXACTLY on the twin: Δ = twin − rim
+        // = (100−100, 100−0) = (0,100) → center (0,100), r 100 unchanged.
+        const moved = snapShapeNode(circle, 'e', { x: 100, y: 100 });
+        expect(moved).toEqual({ kind: 'circle', center: { x: 0, y: 100 }, radius: 100 });
+        // The rim node coincides with the twin exactly — the weld contract
+        expect(shapeNodes(moved).find((node) => node.id === 'e')?.point).toEqual({
+            x: 100,
+            y: 100,
+        });
+        // The center is still on the lattice (twin − old rim is a lattice
+        // offset)
+        expect(shapeNodes(moved)[0].point).toEqual({ x: 0, y: 100 });
+    });
+
+    it('welds a circle CENTER node through adjustShape (snaps to the lattice)', () => {
+        const moved = snapShapeNode(circle, 'center', { x: 150, y: 150 });
+        expect(moved).toEqual({ kind: 'circle', center: { x: 200, y: 200 }, radius: 100 });
+    });
+
+    it('welds a curve node through adjustShape (the twin is a lattice point — exact)', () => {
+        const curve = createCurveShape({ x: 0, y: 0 }, { x: 200, y: 0 })!;
+        const welded = snapShapeNode(curve, 'end', { x: 300, y: 0 });
+        expect(welded).toEqual({
+            kind: 'curve',
+            start: { x: 0, y: 0 },
+            control: { x: 100, y: 100 }, // the bend stays absolute
+            end: { x: 300, y: 0 },
+        });
+        expect(shapeNodes(welded).find((node) => node.id === 'end')?.point).toEqual({
+            x: 300,
+            y: 0,
+        });
+    });
+
+    it('welds a rect corner through adjustShape (opposite corner fixed, min/max re-normalized)', () => {
+        const rect = createRectShape({ x: 100, y: 100 }, { x: 300, y: 200 })!;
+        // Corner 'a' welded onto (500,100): fixed diagonal 'c' (300,200)
+        expect(snapShapeNode(rect, 'a', { x: 500, y: 100 })).toEqual({
+            kind: 'rect',
+            min: { x: 300, y: 100 },
+            max: { x: 500, y: 200 },
+        });
     });
 });
 

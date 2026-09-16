@@ -30,22 +30,27 @@
 //    with a constant offset never ratchet the partners). Cursor:
 //    'pointer' (the hand) on hover, 'grabbing' while dragging.
 // 4. CONNECTED-NODE DRAG (the "move as one" contract, functions/
-//    connection.ts): pressing a node that is a BONDED endpoint (any
-//    endpoint node in state.connections — isEndpointNode) is converted
-//    into a GROUP grab: the drag translates the whole bond-connected
-//    group (the same machinery as the line grab) so the two shapes ride
-//    together and the junction stays welded ("When two item connected
-//    either by node, they are move as one unit").
+//    connection.ts): pressing a node that is a BONDED node (any node in
+//    state.connections — every node of every shape is lockable: curve
+//    start/control/end, circle center + the four cardinal rim nodes,
+//    rect corners) is converted into a GROUP grab: the drag translates
+//    the whole bond-connected group (the same machinery as the line
+//    grab) so the shapes ride together and the junction stays welded
+//    ("When two item connected either by node, they are move as one
+//    unit").
 //    - BREAK ("until the user purposely break the node"): DOUBLE-CLICK on
-//      a bonded endpoint SEVERS every bond on that endpoint — an explicit,
+//      a bonded node SEVERS every bond on that node — an explicit,
 //      deliberate gesture (a plain node drag is consumed by the group
 //      move, so silence never tears a bond; the tilt of the pull-away
 //      gesture would otherwise fight the move-as-one contract).
-//    - Proximity connect (unchanged): dragging an UNBONDED endpoint onto
-//      another shape's endpoint within the grab radius force-snaps the
-//      pair onto the same grid point and records the bond mid-drag; from
-//      that frame the elastic hold below welds the junction until an
-//      extra deliberate tear (> one grid step of pull) dissolves it.
+//    - Proximity connect (all nodes): dragging an UNBONDED node onto
+//      another shape's node within the grab radius of the DESTINATION
+//      force-welds the pair onto the same world point (snapShapeNode —
+//      circle rims TRANSLATE the circle so the lock is exact, since
+//      radius re-quantization alone can miss a diagonal twin by half a
+//      cell) and records the bond mid-drag; from that frame the elastic
+//      hold below welds the junction until an extra deliberate tear
+//      (> one grid step of pull) dissolves it.
 //    - Group semantics: groupOf resolves from the LIVE bonds each frame;
 //      a bond created mid-drag still travels with the dragged group.
 //
@@ -86,11 +91,12 @@ import {
     moveShape,
     shapeInk,
     shapeNodes,
+    snapShapeNode,
 } from '../../functions/shapes';
 import type { DrawPoint, DrawShape } from '../../functions/shapes';
 import { BASE_SPACING, canvasToScreen, screenToCanvas, snapToGrid } from '../../functions/canvasTransform';
 import type { CanvasTransform } from '../../functions/canvasTransform';
-import { bondsOf, breakAt, connect, groupOf, isEndpointNode, twinPoint } from '../../functions/connection';
+import { bondsOf, breakAt, connect, groupOf, twinPoint } from '../../functions/connection';
 import { mountOf } from '../core/DrawPluginRegistry';
 import type { DrawPlugin, DrawPluginContext } from '../core';
 
@@ -348,9 +354,9 @@ export const nodeEditorPlugin = mountOf(
             if (hit.mode === 'node') {
                 const hitShape = drawing.shapes[hit.shapeIndex];
                 const bonds = drawing.connections ?? [];
+                // EVERY node is bondable — the bond list alone decides
                 const bonded =
                     !!hitShape &&
-                    isEndpointNode(hitShape, hit.nodeId) &&
                     bondsOf(bonds, { shapeIndex: hit.shapeIndex, nodeId: hit.nodeId }).length > 0;
                 if (hitShape && bonded) {
                     grabRef = {
@@ -474,23 +480,13 @@ export const nodeEditorPlugin = mountOf(
             }
             const draggedNode = shapeNodes(shape).find((n) => n.id === nodeMode.nodeId);
             if (!draggedNode) return;
-            if (!isEndpointNode(shape, nodeMode.nodeId)) {
-                // Non-endpoint nodes (curve bend, circle radius edge) never
-                // bond — plain grid-locked adjustment
-                const adjusted = adjustShape(shape, nodeMode.nodeId, world);
-                if (!adjusted) return;
-                const nextShapes = shapes.slice();
-                nextShapes[nodeMode.shapeIndex] = adjusted;
-                context.drawing({ ...state, shapes: nextShapes });
-                return;
-            }
-            // ── Bonded endpoint: the ELASTIC HOLD (mid-drag weld) ──
-            // Reached while dragging an UNBONDED endpoint that bonded
-            // MID-DRAG via the proximity connect below (presses on already-
-            // bonded endpoints never get here — handlePointerDown converted
-            // them into group grabs). The node stays welded to its twin so
-            // the fresh bond can't silently dissolve; tearing more than a
-            // full grid step past the twin = "purposely break" — the bond
+            // ── Bonded node: the ELASTIC HOLD (mid-drag weld) ──
+            // Presses on ALREADY-bonded nodes never get here (the
+            // pointerdown conversion turned them into group grabs). This
+            // path runs for bonds created MID-DRAG by the proximity
+            // connect below — a fresh junction welds to its twin so the
+            // new bond can't silently dissolve; tearing more than a full
+            // grid step past the twin = "purposely break" — the bond
             // SEVERS and the node follows the pointer freely.
             const wave = twinPoint(shapes, bonds, {
                 shapeIndex: nodeMode.shapeIndex,
@@ -500,8 +496,8 @@ export const nodeEditorPlugin = mountOf(
                 const separation =
                     Math.abs(world.x - wave.point.x) + Math.abs(world.y - wave.point.y);
                 if (separation > BASE_SPACING) {
-                    // ── TEAR-OFF: sever every bond on this endpoint, then
-                    // the endpoint follows the pointer (snapped)
+                    // ── TEAR-OFF: sever every bond on this node, then the
+                    // node follows the pointer (grid-locked free adjust)
                     const adjusted = adjustShape(shape, nodeMode.nodeId, world);
                     if (!adjusted) return;
                     const nextShapes = shapes.slice();
@@ -516,55 +512,61 @@ export const nodeEditorPlugin = mountOf(
                     });
                     return;
                 }
-                // Inside the elastic zone: weld to the twin (a no-op when
-                // the two already coincide — the common case)
-                const adjusted = adjustShape(shape, nodeMode.nodeId, wave.point);
-                if (!adjusted) return;
+                // Inside the elastic zone: weld EXACTLY onto the twin via
+                // snapShapeNode (circle rims translate the whole circle —
+                // adjustShape's radius re-quantization would miss a
+                // diagonal twin by up to half a cell). A no-op when the
+                // two already coincide — the common case.
+                const welded = snapShapeNode(shape, nodeMode.nodeId, wave.point);
                 const nextShapes = shapes.slice();
-                nextShapes[nodeMode.shapeIndex] = adjusted;
+                nextShapes[nodeMode.shapeIndex] = welded;
                 context.drawing({ ...state, shapes: nextShapes });
                 return;
             }
-            // ── Unbonded endpoint: proximity CONNECT ──
-            // Another shape's endpoint node within the grab radius of the
-            // DRAGGED NODE's own point bonds the two — the dragged endpoint
-            // FORCE-snaps onto the twin's exact grid point (physical
-            // contact) and the pair locks. Topmost shape wins ties.
+            // ── Unbonded node: proximity CONNECT (destination-based) ──
+            // Another shape's node within the grab radius of the
+            // DESTINATION (the snapped pointer world point) bonds the two.
+            // Scanning the destination (not the dragged node's pre-move
+            // point) is what makes CIRCLE RIM drags lockable: a rim
+            // adjust re-quantizes the radius, teleporting the rim node
+            // hundreds of world units between frames — a pre-move scan
+            // would never catch the contact that IS at the pointer now.
+            // Topmost shape wins ties.
             let twin: { shapeIndex: number; nodeId: string } | null = null;
             const hitRadius = hitRadiusWorld(transform);
             for (let s = shapes.length - 1; s >= 0; s--) {
                 if (s === nodeMode.shapeIndex) continue;
                 for (const node of shapeNodes(shapes[s])) {
-                    if (!isEndpointNode(shapes[s], node.id)) continue;
                     if (
-                        Math.hypot(node.point.x - draggedNode.point.x, node.point.y - draggedNode.point.y) <=
-                        hitRadius
+                        Math.hypot(node.point.x - world.x, node.point.y - world.y) <= hitRadius
                     ) {
                         twin = { shapeIndex: s, nodeId: node.id };
                     }
                 }
             }
             if (twin) {
-                const twinNode = shapeNodes(shapes[twin.shapeIndex]).find(
-                    (n) => n.id === twin!.nodeId,
+                const target = twin;
+                const twinNode = shapeNodes(shapes[target.shapeIndex]).find(
+                    (n) => n.id === target.nodeId,
                 );
                 if (twinNode) {
-                    const adjusted = adjustShape(shape, nodeMode.nodeId, twinNode.point);
-                    if (adjusted) {
-                        const nextShapes = shapes.slice();
-                        nextShapes[nodeMode.shapeIndex] = adjusted;
-                        // Record the bond (connect is idempotent)
-                        const connected = connect(
-                            bonds,
-                            { shapeIndex: nodeMode.shapeIndex, nodeId: nodeMode.nodeId },
-                            twin,
-                        );
-                        context.drawing({ ...state, shapes: nextShapes, connections: connected });
-                    }
+                    // Weld EXACTLY onto the twin's grid point
+                    // (snapShapeNode: circle rims roll the whole circle
+                    // onto the junction) and record the bond (connect is
+                    // idempotent)
+                    const welded = snapShapeNode(shape, nodeMode.nodeId, twinNode.point);
+                    const nextShapes = shapes.slice();
+                    nextShapes[nodeMode.shapeIndex] = welded;
+                    const connected = connect(
+                        bonds,
+                        { shapeIndex: nodeMode.shapeIndex, nodeId: nodeMode.nodeId },
+                        target,
+                    );
+                    context.drawing({ ...state, shapes: nextShapes, connections: connected });
                     return;
                 }
             }
-            // Free (unbonded, no contact) endpoint: grid-locked adjustment
+            // Free (unbonded, no contact) node: grid-locked adjustment
             const adjusted = adjustShape(shape, nodeMode.nodeId, world);
             if (!adjusted) return;
             const nextShapes = shapes.slice();
@@ -573,12 +575,11 @@ export const nodeEditorPlugin = mountOf(
         };
 
         // ── DBLCLICK BREAK — the deliberate bond-breaker ──
-        // Double-clicking a bonded endpoint node severs EVERY bond on that
-        // endpoint ("until the user purposely break the node"). A plain drag
-        // of a bonded node is consumed by the group move (move-as-one), so
-        // the break needs its own unmistakable gesture; the junction's halo
-        // marks exactly which handle the double-click targets. Both shapes
-        // keep their geometry — they just aren't welded anymore.
+        // Double-clicking a bonded node severs EVERY bond on that node
+        // ("until the user purposely break the node"). Any node can bond
+        // and so any node can break — the junction's halo marks exactly
+        // which handle the double-click targets. Both shapes keep their
+        // geometry — they just aren't welded anymore.
         const handleDoubleClick = (event: MouseEvent) => {
             // Left-button double-clicks only (right/middle stay pan gestures)
             if (event.button !== 0) return;
@@ -594,7 +595,6 @@ export const nodeEditorPlugin = mountOf(
             const hit = hitTest(drawing.shapes, screen, context.transform());
             // Only a NODE double-click breaks (line double-clicks do nothing)
             if (!hit || hit.mode !== 'node') return;
-            if (!isEndpointNode(drawing.shapes[hit.shapeIndex], hit.nodeId)) return;
             const bonds = drawing.connections ?? [];
             if (bonds.length === 0) return;
             const remaining = breakAt(bonds, {

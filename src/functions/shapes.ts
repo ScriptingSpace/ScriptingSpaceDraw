@@ -23,7 +23,10 @@
 // SHAPE SET:
 // - `curve` — start/control/end quadratic Bézier (the Line tool + its
 //   draggable bend node)
-// - `circle`— center + quantized radius
+// - `circle`— center + quantized radius. FIVE nodes: the center (1, the
+//   middle) + the four cardinal rim points ( East / South / West / North
+//   — the four "size" handles, all quantized grid points when the center
+//   is on the grid)
 // - `rect`  — min/max corners (both on the grid)
 //
 // The builders normalize the raw drag geometry (min/max ordering, radius
@@ -321,13 +324,25 @@ export const shapeNodes = (shape: DrawShape): DrawShapeNode[] => {
                 { id: 'control', point: shape.control, hollow: true },
                 { id: 'end', point: shape.end },
             ];
-        case 'circle':
-            // Center node (moves the circle) + edge node at 3 o'clock
-            // (quantizes the radius)
+        case 'circle': {
+            // FIVE handles (user contract: "It should have at least 5, four
+            // size and 1 in the middle"): the center node (moves the
+            // circle) + the four cardinal rim nodes — East (3 o'clock,
+            // kept the legacy primary edge handle), South (6 o'clock),
+            // West (9 o'clock), North (12 o'clock). With an on-grid center
+            // and quantized radius all five pin to grid intersections.
+            const east = { x: shape.center.x + shape.radius, y: shape.center.y };
+            const south = { x: shape.center.x, y: shape.center.y + shape.radius };
+            const west = { x: shape.center.x - shape.radius, y: shape.center.y };
+            const north = { x: shape.center.x, y: shape.center.y - shape.radius };
             return [
                 { id: 'center', point: shape.center },
-                { id: 'radius', point: { x: shape.center.x + shape.radius, y: shape.center.y } },
+                { id: 'e', point: east },
+                { id: 's', point: south },
+                { id: 'w', point: west },
+                { id: 'n', point: north },
             ];
+        }
         case 'rect':
             // The four corners (a=min,min → clockwise)
             return [
@@ -380,10 +395,13 @@ export const adjustShape = (
                 const center = snapToGrid(point, spacing);
                 return { ...shape, center };
             }
-            if (nodeId === 'radius') {
+            // All FOUR cardinal rim handles act as the radius edge: the
+            // radius relies on the center→pointer distance (drag direction
+            // irrelevant — an East drag behaves like a North drag),
+            // re-quantized to grid steps; clamped to ≥ 1 step so the
+            // circle never collapses away entirely.
+            if (nodeId === 'e' || nodeId === 's' || nodeId === 'w' || nodeId === 'n') {
                 const distance = Math.hypot(point.x - shape.center.x, point.y - shape.center.y);
-                // Clamp ≥ 1 step: radius adjustment must never erase the
-                // circle (the delete-key is a different, future feature)
                 const radius = Math.max(spacing, quantizeRadius(distance, spacing));
                 return { ...shape, radius };
             }
@@ -414,6 +432,35 @@ export const adjustShape = (
             return { ...shape, min, max };
         }
     }
+};
+
+// snapShapeNode — force one node EXACTLY onto a world point (the BOND
+// weld from nodeEditorPlugin: two locked nodes must COINCIDE, not sit
+// within half a cell of each other). Curves/rects route through
+// adjustShape — every adjustable node snaps to the lattice and bond
+// twins are lattice points, so the result is exact. CIRCLE RIM nodes
+// must NOT route through adjustShape for a weld: it re-quantizes the
+// radius to whole grid steps, so a twin at a non-step distance (a
+// diagonal lattice point — center→twin = step·√2) would land up to half
+// a cell short of the twin and the junction would LOOK open while the
+// bond already reports it locked. Instead the whole circle TRANSLATES
+// (moveShape) until the rim lands exactly on the twin: the quantized
+// radius and the grid-locked radius both survive, and the center roll
+// STAYS on the lattice (twin − oldRim is a lattice−lattice offset, and
+// oldCenter + a lattice offset is a lattice point).
+export const snapShapeNode = (
+    shape: DrawShape,
+    nodeId: string,
+    point: DrawPoint,
+    spacing: number = BASE_SPACING,
+): DrawShape => {
+    if (shape.kind === 'circle' && nodeId !== 'center') {
+        const node = shapeNodes(shape).find((entry) => entry.id === nodeId);
+        if (!node) return shape;
+        return moveShape(shape, point.x - node.point.x, point.y - node.point.y, spacing);
+    }
+    const adjusted = adjustShape(shape, nodeId, point, spacing);
+    return adjusted ?? shape;
 };
 
 // Re-export the snapping helpers the tool/editor layers consume so callers

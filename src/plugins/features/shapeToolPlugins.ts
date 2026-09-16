@@ -34,11 +34,11 @@
 //
 // AUTO-CONNECT AT COMMIT (cross-reference: functions/connection.ts +
 // nodeEditorPlugin's move-as-one contract): when a new shape commits with
-// an endpoint ON ANOTHER SHAPE'S endpoint (they snap to the same grid
-// point), a bond is recorded in drawing state — connected shapes MOVE AS
-// ONE UNIT until the user drags the junction away (the node editor's break
-// gesture). Only round-trip endpoint nodes join (curve start/end, circle
-// center, rect corners — isEndpointNode).
+// ANY node ON ANOTHER SHAPE'S node (they snap to the same grid point), a
+// bond is recorded in drawing state — connected shapes MOVE AS ONE UNIT
+// until the user double-clicks the junction (the node editor's break
+// gesture). EVERY node joins: curve start/control/end, circle center +
+// the four cardinal rim nodes, rect corners.
 //
 // SHORTCUTS: KeyC (circle), KeyR (rectangle), KeyL (line/curve) — via
 // toolRouter.
@@ -52,7 +52,7 @@ import {
     shapeNodes,
     snapToGrid,
 } from '../../functions/shapes';
-import { connect, isEndpointNode } from '../../functions/connection';
+import { connect } from '../../functions/connection';
 import type { DrawBond } from '../../functions/connection';
 import type { DrawPoint, DrawShape } from '../../functions/shapes';
 import { mountOf } from '../core/DrawPluginRegistry';
@@ -82,22 +82,20 @@ const writeDraft = (context: DrawPluginContext, draft: DrawShape | null) => {
     } as never);
 };
 
-// connectOnCommit — scan the NEW shape's endpoint nodes against every
-// existing shape's endpoint nodes: any pair sharing an exact grid point
-// bonds (the new shape is always the LAST index). Returns the extended
-// bonds array (or the untouched original when no contact).
+// connectOnCommit — scan the NEW shape's nodes against every existing
+// shape's nodes: any pair sharing an exact grid point bonds (the new shape
+// is always the LAST index; EVERY node participates — all nodes lockable).
+// Returns the extended bonds array (or the untouched original when no
+// contact).
 const connectOnCommit = (
     state: { shapes: DrawShape[]; connections: DrawBond[] },
     newIndex: number,
 ): DrawBond[] => {
     let bonds = state.connections;
-    const before = bonds.length;
     const newShape = state.shapes[newIndex];
     for (const node of shapeNodes(newShape)) {
-        if (!isEndpointNode(newShape, node.id)) continue;
         for (let s = 0; s < newIndex; s++) {
             for (const other of shapeNodes(state.shapes[s])) {
-                if (!isEndpointNode(state.shapes[s], other.id)) continue;
                 // EXACT grid-point contact (both builders snap — equal
                 // coordinates)
                 if (other.point.x === node.point.x && other.point.y === node.point.y) {

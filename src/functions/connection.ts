@@ -8,11 +8,12 @@
 // and only dissolves when the user deliberately DOUBLE-CLICKS the bonded
 // junction node (see nodeEditorPlugin's double-click break gesture).
 //
-// THE ENDPOINT SPACE (what can bond): the round-trip boundary points of
-// every shape:
-// - curve: `start`, `end` (the control node never bonds — it bends, it
-//   does not join)
-// - circle: the center node bonds (a bond can sit at the center point)
+// THE NODE SPACE (what can bond): EVERY node of every shape — the user
+// contract "all nodes on any shape should be able to be locked onto each
+// other":
+// - curve: `start`, `control`, `end` (the bend locks too; while bonded it
+//   rides the group — double-click it to break before re-curving)
+// - circle: the center + the four cardinal rim nodes (`e`, `s`, `w`, `n`)
 // - rect: the four corners
 // A bond is a pair of (shapeIndex, nodeId) refs — resolved to WORLD points
 // at query time through shapeNodes, so geometry stays the single truth and
@@ -37,21 +38,6 @@ export type BondEndpoint = { shapeIndex: number; nodeId: string };
 // A complete bond — an UNORDERED pair of endpoints that are locked together.
 // Persisted in DrawDrawingState.connections (plain serializable data).
 export type DrawBond = [BondEndpoint, BondEndpoint];
-
-// Can the given (shape, node) join bonds? Only ROUND-TRIP boundary points
-// join: curve start/end, circle center, rect corners. The curve control
-// (the bend node) and the circle radius node are NEVER endpoints — a bend
-// is internal curvature, a radius is an edge choice.
-export const isEndpointNode = (shape: DrawShape, nodeId: string): boolean => {
-    switch (shape.kind) {
-        case 'curve':
-            return nodeId === 'start' || nodeId === 'end';
-        case 'circle':
-            return nodeId === 'center';
-        case 'rect':
-            return nodeId === 'a' || nodeId === 'b' || nodeId === 'c' || nodeId === 'd';
-    }
-};
 
 // bondKey — the canonical serialization of a bond (order-insensitive) for
 // fast lookups + dedupe.
