@@ -872,6 +872,7 @@ describe('node editor — click-drag adjustment of shape nodes', () => {
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 600, clientY: 300 });
         fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-line')); // disarm → node drag mode
 
         // Drag the control node up onto the chord (screen 500,300 =
         // world (100,0)) — the curve straightens
@@ -892,6 +893,7 @@ describe('node editor — click-drag adjustment of shape nodes', () => {
         fireEvent.pointerDown(surface, { clientX: 300, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 200, clientY: 200 });
         fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-rectangle')); // disarm
 
         // Drag corner 'a' (200,200) left-up to (100,100) — outside the box
         fireEvent.pointerDown(surface, { clientX: 200, clientY: 200, button: 0 });
@@ -907,7 +909,58 @@ describe('node editor — click-drag adjustment of shape nodes', () => {
         expect(shape.getAttribute('height')).toBe('200');
     });
 
-    it('pressing a node while a tool is armed adjusts; it never starts a drawing draft', () => {
+    it('with a tool armed, pressing a node DRAWS from it — the drop auto-locks (tool precedence)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Existing circle first: center world (0,0) → screen (400,300), r 100
+        fireEvent.click(screen.getByTestId('tool-circle'));
+        fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+
+        // With the LINE tool armed, press EXACTLY on the circle's center
+        // node and drag east: TOOL PRECEDENCE — the node editor yields the
+        // press to the router and a NEW line draws with ITS START anchored
+        // on that node's grid point
+        fireEvent.click(screen.getByTestId('tool-line'));
+        fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+
+        // Two committed shapes (the line drawn FROM the circle's center
+        // node — the press never became a node adjustment)
+        expect(committedElements().length).toBe(2);
+        expect(draftElement()).toBeNull();
+        // The 1-step chord renders straight with the control at the true
+        // midpoint (50,0) → screen (450,300); the DROP CHECK locked TWO
+        // junctions at commit: line.start ↔ circle.center (0,0) AND
+        // line.end ↔ circle.rim 'e' (100,0) — 4 halo'd dots
+        const shapes = committedElements();
+        expect(shapes[1].getAttribute('d')).toBe('M 400 300 Q 450 300 500 300');
+        const halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
+        expect(halos().length).toBe(4);
+
+        // Lock verified: grabbing the CIRCLE's body (the southeast 45° rim
+        // spot (471,371), clear of every node) and moving +100:+0 carries
+        // the line along (move as one) — the line rebuilds from its
+        // grab-time shape + the snapped delta (the half-lattice control
+        // (50,0) re-snaps to (200,0) — the moveShape grid safety net)
+        fireEvent.pointerDown(surface, { clientX: 471, clientY: 371, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 571, clientY: 371 });
+        fireEvent.pointerUp(surface, {});
+        const moved = committedElements();
+        expect(moved[0].getAttribute('cx')).toBe('500');
+        expect(moved[1].getAttribute('d')).toBe('M 500 300 Q 600 300 600 300');
+        // 5 halos: the 2 original junctions (start↔center, end↔rim e)
+        // ride the move, PLUS the release check bonds the line's bend
+        // (control re-snapped from half-lattice (150,0) to (200,0) by
+        // moveShape's grid safety net) onto the circle's rim `e` (200,0)
+        // — a real new coincidence the move itself created.
+        expect(halos().length).toBe(5);
+    });
+
+    it('pan-mode node drag still adjusts (disarm = the adjustment interaction)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
@@ -915,10 +968,10 @@ describe('node editor — click-drag adjustment of shape nodes', () => {
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
         fireEvent.pointerUp(surface, {});
-        expect(committedElements().length).toBe(1);
+        fireEvent.click(screen.getByTestId('tool-circle')); // disarm
 
-        // Circle still armed — press EXACTLY on the center node and drag:
-        // the node editor claims the press (the router never draws)
+        // PAN MODE — press EXACTLY on the center node and drag: the node
+        // editor claims the press (the router never draws)
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
         fireEvent.pointerUp(surface, {});
@@ -957,12 +1010,12 @@ describe('node editor — click-drag adjustment of shape nodes', () => {
         expect(committedElements()[0].getAttribute('cy')).toBe('300');
     });
 
-    it('overlapping nodes at commit LOCK — the junction press drags the whole pair as one', () => {
+    it('overlapping nodes at commit LOCK — bending holds the weld, pulling out breaks to the top node', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
         // Circle centered at world (−100, 0) → screen (300,300), r 100.
-        // Its east rim node (`e` — now lockable like every node) sits at
+        // Its east rim node (`e` — lockable like every node) sits at
         // world (0,0) → screen (400,300).
         fireEvent.click(screen.getByTestId('tool-circle'));
         fireEvent.pointerDown(surface, { clientX: 300, clientY: 300, button: 0 });
@@ -971,40 +1024,47 @@ describe('node editor — click-drag adjustment of shape nodes', () => {
 
         // Rect drawn SECOND: press (100, 200) = world (−300,−100), drag to
         // (400,300) = world (0,0) — corner 'c' (max/max) lands exactly on
-        // the circle's east rim node (world 0,0). ALL nodes are lockable
-        // now, so the commit auto-connects corner 'c' ↔ rim `e` — one
-        // junction, two halo'd endpoint dots.
+        // the circle's east rim node (world 0,0). The commit auto-bonds
+        // corner 'c' ↔ rim 'e' — one junction, two halo'd endpoint dots.
         fireEvent.click(screen.getByTestId('tool-rectangle'));
         fireEvent.pointerDown(surface, { clientX: 100, clientY: 200, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
         fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-rectangle')); // disarm
         expect(committedElements().length).toBe(2);
         const halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
         expect(halos().length).toBe(2);
 
-        // Press the shared point (400,300): the later shape's node wins
-        // (hitTest walks topmost first) and — being BONDED — converts to
-        // the group grab: dragging the junction moves BOTH shapes by the
-        // same snapped delta and the weld rides along.
+        // Press the junction (the rect — drawn LATER — owns the top node
+        // claim) and bend the pointer WITHIN one grid step: screen
+        // (495,300) = world (95,0) — the elastic hold keeps the weld and
+        // NEITHER shape moves
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
-        fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+        fireEvent.pointerMove(surface, { clientX: 495, clientY: 300 });
+        expect(halos().length).toBe(2);
+
+        // Pull OUT past a full grid step: screen (620,300) = world
+        // (220,0) → snapped (200,0) — the lock SEVERS and the grabbed
+        // node (whichever is on top: the rect's corner 'c') follows the
+        // pointer while the circle keeps its position. The rect folds
+        // around its fixed diagonal corner 'a' (world (−300,−100)).
+        fireEvent.pointerMove(surface, { clientX: 620, clientY: 300 });
         fireEvent.pointerUp(surface, {});
 
         const shapes = committedElements();
-        // Circle: center (−100,0) → (0,0) → screen cx 400, r unchanged
-        expect(shapes[0].getAttribute('cx')).toBe('400');
+        // Circle: untouched by the rect's node drag (the break released
+        // the pair) — center stayed at world (−100,0) → cx 300
+        expect(shapes[0].getAttribute('cx')).toBe('300');
         expect(shapes[0].getAttribute('cy')).toBe('300');
         expect(shapes[0].getAttribute('r')).toBe('100');
-        // Rect: min (−300,−100) → (−200,−100), max (0,0) → (100,0)
-        // → screen x 200, y 200, width 300, height 100 (min y −100 → max y 0)
-        expect(shapes[1].getAttribute('x')).toBe('200');
+        // Rect: min (−300,−100) unchanged (fixed corner), max (0,0) →
+        // (200,0) → screen x 100, y 200, width 500, height 100
+        expect(shapes[1].getAttribute('x')).toBe('100');
         expect(shapes[1].getAttribute('y')).toBe('200');
-        expect(shapes[1].getAttribute('width')).toBe('300');
+        expect(shapes[1].getAttribute('width')).toBe('500');
         expect(shapes[1].getAttribute('height')).toBe('100');
-        // The junction stayed welded: rect corner 'c' (world (100,0)) and
-        // circle rim `e` (world (100,0)) still coincide — their two halos
-        // ride side by side
-        expect(halos().length).toBe(2);
+        // The bond is gone
+        expect(halos().length).toBe(0);
     });
 
     it('pointerleave during a node drag ends it cleanly (shape keeps its geometry)', () => {
@@ -1015,6 +1075,7 @@ describe('node editor — click-drag adjustment of shape nodes', () => {
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
         fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-circle')); // disarm → node drag mode
 
         // Start a node drag then leave the canvas mid-drag
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
@@ -1052,6 +1113,9 @@ describe('bonded groups — connected shapes move as one', () => {
         fireEvent.pointerDown(surface, { clientX: 700, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
         fireEvent.pointerUp(surface, {});
+        // Disarm: node gestures (adjust / pull-break / re-connect) are the
+        // pan-mode interaction — with a tool armed a node press DRAWS
+        fireEvent.click(screen.getByTestId('tool-line'));
     };
 
     // After moving the bonded pair by the exact +100,+0 delta (un-snapped,
@@ -1070,44 +1134,45 @@ describe('bonded groups — connected shapes move as one', () => {
     const A_LEFT = 'M 0 300 Q 200 500 300 300';
     const B_LEFT = 'M 600 300 Q 500 200 300 300';
 
-    it('a constant-delta drag held across MANY pointermove events never ratchets the group (node-drag group grab)', () => {
+    it('placing the cursor ON the bonded node and dragging it out BREAKS the lock (pull-to-break)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
         drawBondedPair(surface);
 
-        // Press the bonded junction (400,300 = the anchor, world (0,0)) and
-        // hold the pointer INSIDE the +100 band across several events:
-        // dx = snap(95) = 100 on every event, and every event rebuilds the
-        // members from their grab-time snapshots + the absolute dx — the
-        // result must be exactly +100, not +100 per event.
+        // Press the bonded junction (400,300 — B's end node, the top node
+        // there) and bend the pointer WITHIN one grid step: screen
+        // (495,300) = world (95,0) — the elastic hold keeps the junction
+        // welded and NOTHING moves (repeat events change nothing)
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
-        const HOLD = { clientX: 495, clientY: 300 };
-        fireEvent.pointerMove(surface, HOLD);
-        fireEvent.pointerMove(surface, HOLD);
-        fireEvent.pointerMove(surface, HOLD);
-        fireEvent.pointerMove(surface, HOLD);
+        fireEvent.pointerMove(surface, { clientX: 495, clientY: 300 });
+        fireEvent.pointerMove(surface, { clientX: 495, clientY: 300 });
         let paths = committedElements().map((p) => p.getAttribute('d'));
-        expect(paths).toEqual([A_MOVED, B_MOVED]);
-
-        // Slide back under the anchor (same drag — dx 0): the absolute
-        // rebuild restores the grab-time geometry exactly
-        fireEvent.pointerMove(surface, { clientX: 405, clientY: 300 });
-        paths = committedElements().map((p) => p.getAttribute('d'));
         expect(paths).toEqual([A_IDLE, B_IDLE]);
+        let halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
+        expect(halos().length).toBe(2);
 
-        // Cross the anchor to the left (dx −100): one step left, no residue
-        fireEvent.pointerMove(surface, { clientX: 295, clientY: 300 });
+        // Pull OUT past one full grid step: screen (505,300) = world
+        // (105,0) — the lock SEVERS ("drags it out → it breaks"): the
+        // grabbed node — WHICHEVER IS ON TOP at the junction, B's end —
+        // follows the pointer as a free snapped adjustment while A keeps
+        // everything and the halos vanish
+        fireEvent.pointerMove(surface, { clientX: 505, clientY: 300 });
         paths = committedElements().map((p) => p.getAttribute('d'));
-        expect(paths).toEqual([A_LEFT, B_LEFT]);
+        // B: {start (300,0), control (200,−200), end (100,0)} — its end
+        // pulled to the snapped pointer point; A: untouched
+        expect(paths).toEqual([A_IDLE, 'M 700 300 Q 600 200 500 300']);
+        expect(halos().length).toBe(0);
 
-        // Back into the +100 band: forward again, still no accumulation
-        fireEvent.pointerMove(surface, HOLD);
+        // Fully independent now: the pulled node keeps following like a
+        // free node
+        fireEvent.pointerMove(surface, { clientX: 605, clientY: 300 });
         paths = committedElements().map((p) => p.getAttribute('d'));
-        expect(paths).toEqual([A_MOVED, B_MOVED]);
+        expect(paths).toEqual([A_IDLE, 'M 700 300 Q 600 200 600 300']);
+        expect(halos().length).toBe(0);
         fireEvent.pointerUp(surface, {});
     });
 
-    it('a constant-delta line drag across MANY pointermove events never ratchets the group either', () => {
+    it('a constant-delta line drag across MANY pointermove events never ratchets the group (and the weld rides)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
         drawBondedPair(surface);
@@ -1152,20 +1217,45 @@ describe('bonded groups — connected shapes move as one', () => {
         expect(paths).toEqual([A_MOVED, B_MOVED]);
     });
 
-    it('dragging the connected NODE itself moves the whole pair as one', () => {
+    it('dragging a bonded node OUT breaks the lock: the top node follows, the twin and the line-grab group split', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
         drawBondedPair(surface);
 
-        // Press the junction (400,300 = world 0,0): the node editor grabs
-        // B's bonded end node and CONVERTS it to a group grab — dragging
-        // the node translates A AND B together (the move-as-one contract)
+        // Press the junction (400,300 — B's end node is on top) and pull
+        // past one grid step: screen (620,300) = world (220,0) → the
+        // break severs the bond and B's end becomes a free node at the
+        // snapped (200,0); A keeps everything
         fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 620, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        let paths = committedElements().map((p) => p.getAttribute('d'));
+        expect(paths).toEqual([A_IDLE, 'M 700 300 Q 600 200 600 300']);
+        let halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
+        expect(halos().length).toBe(0);
+
+        // Line-grab A and move +100 — A moves ALONE now, B stays where
+        // the break left it (the pair no longer rides together). A's end
+        // node now sits at world (100,0) → screen (500,300).
+        fireEvent.pointerDown(surface, { clientX: 275, clientY: 400, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 375, clientY: 400 });
+        fireEvent.pointerUp(surface, {});
+        paths = committedElements().map((p) => p.getAttribute('d'));
+        expect(paths).toEqual([A_MOVED, 'M 700 300 Q 600 200 600 300']);
+
+        // Re-verify the connect side: drag B's (freed) end node (600,300)
+        // onto A's end (500,300) — the DESTINATION scan finds the twin,
+        // the weld is exact and the halos relight (the break was real,
+        // the connect is a fresh bond)
+        fireEvent.pointerDown(surface, { clientX: 600, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
         fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
         fireEvent.pointerUp(surface, {});
-
-        const paths = committedElements().map((p) => p.getAttribute('d'));
-        expect(paths).toEqual([A_MOVED, B_MOVED]);
+        halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
+        expect(halos().length).toBe(2);
+        paths = committedElements().map((p) => p.getAttribute('d'));
+        // B re-welded: {start (300,0), control (200,−200), end (100,0)}
+        expect(paths).toEqual([A_MOVED, 'M 700 300 Q 600 200 500 300']);
     });
 
     it('double-clicking the junction severs the bond: shapes move independently', () => {
@@ -1204,6 +1294,8 @@ describe('bonded groups — connected shapes move as one', () => {
         fireEvent.pointerDown(surface, { clientX: 800, clientY: 300, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 700, clientY: 300 });
         fireEvent.pointerUp(surface, {});
+        // Disarm: the node drag below needs the editor to own the press
+        fireEvent.click(screen.getByTestId('tool-line'));
         // Committed WITHOUT contact: (300,0) ≠ (0,0) → no bond yet
         const halos = () =>
             nodeDots().filter((dot) => dot.getAttribute('r') === '8');
@@ -1354,6 +1446,10 @@ describe('circle locks — rim nodes bond like any other node', () => {
         fireEvent.pointerUp(surface, {});
         expect(halos().length).toBe(0);
 
+        // Disarm (the active tool is the line) — node gestures are the
+        // pan-mode interaction (tool-armed node presses DRAW)
+        fireEvent.click(screen.getByTestId('tool-line'));
+
         // Drag the circle's NORTH rim node (400,200) onto L's end (400,100):
         // the destination scan finds L.end at the snapped pointer point and
         // the weld ROLLS the circle up (Δ = (0,−100) → center (0,−100)) so
@@ -1393,4 +1489,225 @@ describe('circle locks — rim nodes bond like any other node', () => {
         expect(moved[1].getAttribute('d')).toBe('M 700 100 Q 600 0 500 100');
         expect(halos().length).toBe(2);
     });
+
+    it('a circle edge dropped 45° toward a lattice node SLIDES the circle to lock exactly (drop check heal)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Rect first: corners world (100,100)–(200,200) [press 500,400 →
+        // 600,500] — corner 'a' is a lattice node at (100,100)
+        fireEvent.click(screen.getByTestId('tool-rectangle'));
+        fireEvent.pointerDown(surface, { clientX: 500, clientY: 400, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 600, clientY: 500 });
+        fireEvent.pointerUp(surface, {});
+
+        // Circle: center (0,0) [press 400,300], edge released 45° toward
+        // the corner at (102,103) [screen 502,403] — raw distance ≈ 144.7
+        // → radius quantizes to 100 with the rim at (100,0): ONE grid step
+        // from the corner (100,100). The exact check misses (no coincide)
+        // — the rim heal fires: the circle SLIDES (100,100)−(100,0) =
+        // (0,100) so the rim lands EXACTLY on the corner. Radius stays
+        // 100; the center stays lattice.
+        fireEvent.click(screen.getByTestId('tool-circle'));
+        fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 502, clientY: 403 });
+        fireEvent.pointerUp(surface, {});
+
+        expect(committedElements().length).toBe(2);
+        const shapes = committedElements();
+        // Slid: center (0,100) → screen (400,400), radius unchanged
+        expect(shapes[1].getAttribute('cx')).toBe('400');
+        expect(shapes[1].getAttribute('cy')).toBe('400');
+        expect(shapes[1].getAttribute('r')).toBe('100');
+        // Bonded
+        const halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
+        expect(halos().length).toBe(2);
+
+        // Move as one: grab the RECT's body (its left edge midpoint world
+        // (100,150) → screen (500,450): 0 to the stroke, ≥45px to every
+        // node, ≥53px to the circle stroke) and drag +100:+0 — the circle
+        // rides (the lock survived the drop)
+        fireEvent.pointerDown(surface, { clientX: 500, clientY: 450, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 600, clientY: 450 });
+        fireEvent.pointerUp(surface, {});
+        const moved = committedElements();
+        // Rect: (200,100)–(300,200) → x 600 y 400 w 100 h 100
+        expect(moved[0].getAttribute('x')).toBe('600');
+        expect(moved[0].getAttribute('y')).toBe('400');
+        // Circle: center (100,100) → screen cx 500, cy 400
+        expect(moved[1].getAttribute('cx')).toBe('500');
+        expect(moved[1].getAttribute('cy')).toBe('400');
+        expect(halos().length).toBe(2);
+    });
+
+    it('a drop with NO node within a grid step stays un-bonded (the window is not global)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Rect: corners (200,100)–(300,200) [press 600,400 → 700,500]
+        fireEvent.click(screen.getByTestId('tool-rectangle'));
+        fireEvent.pointerDown(surface, { clientX: 600, clientY: 400, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 700, clientY: 500 });
+        fireEvent.pointerUp(surface, {});
+
+        // Circle: center (0,0), edge east at (102,−3) → r 100, rim e at
+        // (100,0): distance to the nearest rect node (corner 'a' (200,100))
+        // = √(100²+100²) ≈ 141 > one grid step → NO heal, NO bond
+        fireEvent.click(screen.getByTestId('tool-circle'));
+        fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 502, clientY: 297 });
+        fireEvent.pointerUp(surface, {});
+
+        expect(committedElements().length).toBe(2);
+        const shapes = committedElements();
+        // The circle committed where it was drawn (no slide)
+        expect(shapes[1].getAttribute('cx')).toBe('400');
+        expect(shapes[1].getAttribute('cy')).toBe('300');
+        expect(shapes[1].getAttribute('r')).toBe('100');
+        // Nothing bonded
+        expect(nodeDots().filter((dot) => dot.getAttribute('r') === '8')).toHaveLength(0);
+    });
+
+    it('DRAGGING an old shape: release with a node landed on another node LOCKS it', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Line L first: world (−300,0)→(0,0) [press 100,300 → 400,300]
+        fireEvent.click(screen.getByTestId('tool-line'));
+        fireEvent.pointerDown(surface, { clientX: 100, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        // Rect second: (500,100)–(600,200) [press 900,400 → 1000,500]
+        fireEvent.click(screen.getByTestId('tool-rectangle'));
+        fireEvent.pointerDown(surface, { clientX: 900, clientY: 400, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 1000, clientY: 500 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-rectangle')); // disarm
+        // No bonds yet (no coincidences at commit)
+        expect(nodeDots().filter((dot) => dot.getAttribute('r') === '8')).toHaveLength(0);
+
+        // Line-grab the rect's body (left-edge midpoint world (500,150) →
+        // screen (900,450): 0 to the stroke, ≥45px to every node, far from
+        // the line) and drag dx −5 steps dy −1 step: the rect settles at
+        // world (0,0)–(100,100) — corner 'a' (min-min, world (0,0)) lands
+        // EXACTLY on the line's END node (0,0). (The line is a 3-step
+        // chord: start (−300,0), bent control (−100,200), end (0,0) — no
+        // other corner touches any of its nodes.) The RELEASE auto-lock
+        // records corner 'a' ↔ line end.
+        fireEvent.pointerDown(surface, { clientX: 900, clientY: 450, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 350 });
+        fireEvent.pointerUp(surface, {});
+
+        // Locked at release
+        const halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
+        expect(halos().length).toBe(2);
+
+        // The lock is real: grab the LINE's body at its apex — world
+        // (−125,100): 0.25·start + 0.5·control + 0.25·end → screen
+        // (275,400) (0px off the stroke, ≥58px to every node and ≥…px to
+        // the rect body) — and move +100:+0. The bond group carries the
+        // RECT: it rides +100 with the line (pan untouched — the origin
+        // stays at (400,300)).
+        fireEvent.pointerDown(surface, { clientX: 275, clientY: 400, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 375, clientY: 400 });
+        fireEvent.pointerUp(surface, {});
+        const moved = committedElements();
+        // Rect: min (100,0) → screen x 500, y 300
+        expect(moved[1].getAttribute('x')).toBe('500');
+        expect(moved[1].getAttribute('y')).toBe('300');
+        // Bond survived: halos still lit
+        expect(halos().length).toBe(2);
+    });
+
+    it('DRAGGING an old circle: release one step from a lattice node SLIDES onto it and locks (heal)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Line L: world (−100,0)→(0,0), a 1-step straight chord [press
+        // 300,300 → 400,300]. Its END node (0,0) is the (lattice) heal
+        // target for the circle below.
+        fireEvent.click(screen.getByTestId('tool-line'));
+        fireEvent.pointerDown(surface, { clientX: 300, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        // Circle: center (400,0), r 100 [press 800,300 → 900,300] — the
+        // nearest foreign node (L.end (0,0)) sits 3 steps from rim w
+        // (300,0) → NO commit lock (no exact contact, no one-step rim)
+        fireEvent.click(screen.getByTestId('tool-circle'));
+        fireEvent.pointerDown(surface, { clientX: 800, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 900, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-circle')); // disarm
+        expect(nodeDots().filter((dot) => dot.getAttribute('r') === '8')).toHaveLength(0);
+
+        // Body-grab the circle at the rim's southeast 45° spot (world
+        // (471,71) → screen (871,371): ≈0.34px off the stroke, ≥63px to
+        // every node) and drag dx −3 steps dy +1 step: the center lands
+        // at world (100,100) — corners of the node diamond: rim w (0,100),
+        // e (200,100), s (100,200), n (100,0). NOTHING coincides with
+        // L's end (0,0) exactly (tier 1 empty) — but rim w sits ONE grid
+        // step from (0,0) → the RELEASE heal slides the circle Δ =
+        // (0,−100) so rim w lands EXACTLY on (0,0): center (100,0)
+        fireEvent.pointerDown(surface, { clientX: 871, clientY: 371, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 571, clientY: 471 });
+        fireEvent.pointerUp(surface, {});
+
+        const shapes = committedElements();
+        // Slid: center (100,0) → screen cx 500, cy 300; radius untouched
+        expect(shapes[1].getAttribute('cx')).toBe('500');
+        expect(shapes[1].getAttribute('cy')).toBe('300');
+        expect(shapes[1].getAttribute('r')).toBe('100');
+        // Bonded: rim w == L.end
+        const halos = () => nodeDots().filter((dot) => dot.getAttribute('r') === '8');
+        expect(halos().length).toBe(2);
+
+        // The lock is real: grab L's STROKE between its start node (world
+        // (−100,0) → screen (300,300), 13px away) and its bend node (the
+        // straight 1-step chord's control sits at the midpoint
+        // (−50,0) → screen (350,300)): press (337,300) — 0px off the
+        // stroke, ≥13px clear of every node — then move +100:+0. The
+        // bond group carries the CIRCLE with the line.
+        fireEvent.pointerDown(surface, { clientX: 337, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 437, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        const moved = committedElements();
+        // Circle: center (200,0) → screen cx 600 — it rode the group move
+        expect(moved[1].getAttribute('cx')).toBe('600');
+        // Line: start (0,0), control→snap((50,0)) = (100,0), end (100,0)
+        // — the weld rides (rim w lands on the moved end (100,0))
+        expect(moved[0].getAttribute('d')).toBe('M 400 300 Q 500 300 500 300');
+        // 3 halos: rim w ↔ L.end rides, AND the release check bonds the
+        // line's bend — the snap safety net folded the half-lattice
+        // control ((−50,0)+100 = (50,0) → snaps to (100,0)) exactly onto
+        // rim w (100,0): another real coincidence the group move created.
+        expect(halos().length).toBe(3);
+    });
+
+    it('a press with NO movement never locks (the release check needs a real drag)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Same no-contact scene: line (−100,0)→(0,0); circle center
+        // (400,0) r 100 — committed alone
+        fireEvent.click(screen.getByTestId('tool-line'));
+        fireEvent.pointerDown(surface, { clientX: 300, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-circle'));
+        fireEvent.pointerDown(surface, { clientX: 800, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 900, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-circle')); // disarm
+        expect(nodeDots().filter((dot) => dot.getAttribute('r') === '8')).toHaveLength(0);
+
+        // A bare press on the circle's rim-e NODE (world (500,0) → screen
+        // (900,300)) released with NO move: geometry unchanged → the
+        // release auto-lock must not fire — no bond, no slide
+        fireEvent.pointerDown(surface, { clientX: 900, clientY: 300, button: 0 });
+        fireEvent.pointerUp(surface, {});
+        expect(nodeDots().filter((dot) => dot.getAttribute('r') === '8')).toHaveLength(0);
+        const circles = committedElements().filter((el) => el.tagName === 'circle');
+        expect(circles[0].getAttribute('cx')).toBe('800'); // never slid
+    });
 });
+

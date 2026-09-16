@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // REMOVABLE feature plugin: NODE EDITOR — node adjustment + whole-shape
-// grab-move + node BONDS (move-as-one) + cursor feedback.
+// grab-move + node BONDS (weld + pull-to-break) + cursor feedback.
 //
 // USER CONTRACT ("Allows adjustment of the node by clicking and dragging
 // them" / "I should able to move it around the canvas if I grab them and
@@ -29,30 +29,28 @@
 //    from the anchor, not a frame delta, so repeated pointermove events
 //    with a constant offset never ratchet the partners). Cursor:
 //    'pointer' (the hand) on hover, 'grabbing' while dragging.
-// 4. CONNECTED-NODE DRAG (the "move as one" contract, functions/
-//    connection.ts): pressing a node that is a BONDED node (any node in
-//    state.connections — every node of every shape is lockable: curve
-//    start/control/end, circle center + the four cardinal rim nodes,
-//    rect corners) is converted into a GROUP grab: the drag translates
-//    the whole bond-connected group (the same machinery as the line
-//    grab) so the shapes ride together and the junction stays welded
-//    ("When two item connected either by node, they are move as one
-//    unit").
-//    - BREAK ("until the user purposely break the node"): DOUBLE-CLICK on
-//      a bonded node SEVERS every bond on that node — an explicit,
-//      deliberate gesture (a plain node drag is consumed by the group
-//      move, so silence never tears a bond; the tilt of the pull-away
-//      gesture would otherwise fight the move-as-one contract).
+// 4. BREAKING THE LOCK (the "until the user purposely break the node"
+//    contract, functions/connection.ts): the bond welds the SHAPES
+//    together — a line grab moves the whole bond-connected group as one
+//    (see 3) and the junction rides along welded. But placing the cursor
+//    ON a bonded node and dragging it OUT is the deliberate break:
+//    - PULL-TO-BREAK (the primary break gesture): a bonded node drag
+//      runs the ELASTIC HOLD — inside one grid step of the twin the
+//      junction stays welded (the lock holds while the pointer bends
+//      against it); pulling past a full grid step SEVERS every bond on
+//      that node and the grabbed node — whichever node is ON TOP at the
+//      junction, hitTest's pick — follows the pointer as a free
+//      adjustment while the twin keeps its position.
+//    - DBLCLICK: double-clicking a bonded node also SEVERS every bond
+//      on it — break WITHOUT moving either shape.
 //    - Proximity connect (all nodes): dragging an UNBONDED node onto
 //      another shape's node within the grab radius of the DESTINATION
 //      force-welds the pair onto the same world point (snapShapeNode —
 //      circle rims TRANSLATE the circle so the lock is exact, since
 //      radius re-quantization alone can miss a diagonal twin by half a
 //      cell) and records the bond mid-drag; from that frame the elastic
-//      hold below welds the junction until an extra deliberate tear
+//      hold above welds the junction until an extra deliberate tear
 //      (> one grid step of pull) dissolves it.
-//    - Group semantics: groupOf resolves from the LIVE bonds each frame;
-//      a bond created mid-drag still travels with the dragged group.
 //
 // CURSOR FEEDBACK: the styled cursor classes (crosshair/grab) stay on the
 // surface element; this plugin overrides them IMPERATIVELY via
@@ -93,6 +91,7 @@ import {
     shapeNodes,
     snapShapeNode,
 } from '../../functions/shapes';
+import { autoLockShapes } from './shapeToolPlugins';
 import type { DrawPoint, DrawShape } from '../../functions/shapes';
 import { BASE_SPACING, canvasToScreen, screenToCanvas, snapToGrid } from '../../functions/canvasTransform';
 import type { CanvasTransform } from '../../functions/canvasTransform';
@@ -108,24 +107,24 @@ const HIT_RADIUS_PX = 10;
 // Rendered handle dot radius (screen px)
 const NODE_DOT_RADIUS = 5;
 
-// The active gesture kinds — a node adjustment or a whole-shape (group) move.
-// The NODE kind covers unbonded endpoint drags (adjust / proximity-connect)
-// and non-endpoint nodes (bend, radius); a press on a BONDED endpoint is
-// CONVERTED below into the 'shape' kind so the group move machinery runs
-// (the move-as-one contract).
+// The active gesture kinds — a node adjustment or a whole-shape (group)
+// move. The NODE kind covers free node drags (adjust / proximity-connect /
+// pull-to-break: every node press stays a node grab — a bonded node press
+// runs the ELASTIC HOLD below, it is NOT converted into a group grab).
+// The SHAPE kind is a body grab (a press on the line itself) — it owns the
+// move-as-one group translation.
 type GrabRef =
     | { mode: 'node'; shapeIndex: number; nodeId: string; cursor: string }
-    // `anchor` = the delta origin in world coords (the press point for a
-    // body grab, the DRAGGED NODE's own point for a bonded-node
-    // conversion). `originals` = EVERY group member's geometry at grab
-    // time, keyed by shape index: each pointermove rebuilds members as
-    // snapshot + the ABSOLUTE grid-snapped delta from the anchor, which is
-    // IDEMPOTENT over repeated events. (The pre-fix version rebuilt
-    // partners from their per-frame CURRENT shapes and re-applied the
-    // absolute dx on every event — a real drag fires many moves with a
-    // constant dx inside one grid cell, so bonded partners ratcheted one
-    // step per pointermove and flew apart. Snapshots kill the ratchet and
-    // make sliding back under the anchor restore the originals.)
+    // `anchor` = the press point in world coords. `originals` = EVERY group
+    // member's geometry at grab time, keyed by shape index: each
+    // pointermove rebuilds members as snapshot + the ABSOLUTE grid-snapped
+    // delta from the anchor, which is IDEMPOTENT over repeated events. (An
+    // earlier version rebuilt partners from their per-frame CURRENT shapes
+    // and re-applied the absolute dx on every event — a real drag fires
+    // many moves with a constant dx inside one grid cell, so bonded
+    // partners ratcheted one step per pointermove and flew apart.
+    // Snapshots kill the ratchet and make sliding back under the anchor
+    // restore the originals.)
     | {
           mode: 'shape';
           shapeIndex: number;
@@ -182,19 +181,25 @@ const hitTest = (
 };
 
 // Hover cursor for a point over the canvas (no active grab): the SAME
-// priority as hitTest — node → 'grab' (draggable), body → 'pointer' (the
-// hand, the shape is movable), empty → null (the class cursor resurfaces)
+// priority as hitTest — node → 'grab' (draggable, PAN MODE only: with a
+// tool armed the press draws and the crosshair class stays — see the
+// tool-precedence note in handlePointerDown), body → 'pointer' (the
+// hand, the shape is movable — in tool mode too), empty → null (the
+// class cursor resurfaces)
 const hoverCursor = (
     shapes: DrawShape[],
     screen: { x: number; y: number },
     transform: CanvasTransform,
+    toolArmed: boolean,
 ): string | null => {
     const world = screenToCanvas(screen, transform);
     const radius = hitRadiusWorld(transform);
     for (let shapeIndex = shapes.length - 1; shapeIndex >= 0; shapeIndex--) {
         const shape = shapes[shapeIndex];
         for (const node of shapeNodes(shape)) {
-            if (Math.hypot(node.point.x - world.x, node.point.y - world.y) <= radius) return 'grab';
+            if (Math.hypot(node.point.x - world.x, node.point.y - world.y) <= radius) {
+                return toolArmed ? null : 'grab';
+            }
         }
         if (distanceToShape(shape, world) <= radius) return 'pointer';
     }
@@ -317,6 +322,17 @@ export const nodeEditorPlugin = mountOf(
         // The currently grabbed interaction (null = idle)
         let grab: GrabRef | null = null;
 
+        // Node-point signature of the grabbed shape AT GRAB TIME
+        // (JSON of shapeNodes' points). At release it re-computes against
+        // the live geometry: an UNCHANGED signature (a click that never
+        // moved) skips the release auto-lock — a mere press must never
+        // teleport a circle via the rim heal.
+        let grabSig: string | null = null;
+
+        // The node-point signature helper (grab + release records)
+        const shapeSig = (shape: DrawShape): string =>
+            JSON.stringify(shapeNodes(shape).map((node) => node.point));
+
         // Screen point → world point (the shapes' coordinate space)
         const toWorld = (screen: { x: number; y: number }) =>
             screenToCanvas(screen, context.transform());
@@ -343,44 +359,27 @@ export const nodeEditorPlugin = mountOf(
             const screen = toScreenPoint(surface, event);
             const hit = hitTest(drawing.shapes, screen, context.transform());
             if (!hit) return;
-            // ── MOVE-AS-ONE CONVERSION ──
-            // A press on a node that is a BONDED endpoint is a GROUP grab,
-            // not a node adjustment: the whole bond-connected group moves
-            // with the drag (the contract — connected shapes move as one
-            // unit when dragged). Convert the grab to the 'shape' kind so
-            // the pointermove path runs the body-grab group move (groupOf +
-            // moveShape).
-            let grabRef = hit;
-            if (hit.mode === 'node') {
-                const hitShape = drawing.shapes[hit.shapeIndex];
-                const bonds = drawing.connections ?? [];
-                // EVERY node is bondable — the bond list alone decides
-                const bonded =
-                    !!hitShape &&
-                    bondsOf(bonds, { shapeIndex: hit.shapeIndex, nodeId: hit.nodeId }).length > 0;
-                if (hitShape && bonded) {
-                    grabRef = {
-                        mode: 'shape',
-                        shapeIndex: hit.shapeIndex,
-                        // The anchor is the DRAGGED NODE's own world point
-                        // (not the raw press): the snapped delta then
-                        // measures pointer displacement from the junction
-                        // itself, so the junction lands on the pointer's
-                        // grid point without a ≤10px grab-radius skew
-                        // flipping the snap near cell boundaries
-                        anchor:
-                            shapeNodes(hitShape).find((n) => n.id === hit.nodeId)?.point ??
-                            toWorld(screen),
-                        originals: { [hit.shapeIndex]: hitShape },
-                    };
-                }
-            }
+            // ── TOOL PRECEDENCE (draw-from-node) ──
+            // With a tool armed, a press on a NODE yields to the tool: a
+            // new shape wants that node's grid point as its anchor, and
+            // the commit drop check (autoConnect) then welds the junction.
+            // Without this the editor steals every node press and the
+            // user could never DRAW onto a node — the auto lock looked
+            // "flaky" (locks formed only when the press missed nodes).
+            // BODY grabs still win with a tool armed (moving an existing
+            // shape never competes with an anchor point).
+            if (context.activeTool() !== null && hit.mode === 'node') return;
             // ── GROUP SNAPSHOT (ratchet-proof) ──
-            // Every 'shape' grab (body grab OR bonded-node conversion)
-            // snapshots the grab-time geometry of the WHOLE bond-connected
-            // group. Pointermove rebuilds each member as snapshot +
-            // absolute delta (see GrabRef) — never from per-frame current
-            // shapes, which double-applied the delta on every event.
+            // A body grab on a bonded shape snapshots the grab-time
+            // geometry of the WHOLE bond-connected group (the grabbed
+            // shape is already seeded by hitTest). Pointermove rebuilds
+            // each member as snapshot + absolute delta (see GrabRef) —
+            // never from per-frame current shapes, which double-applied
+            // the delta on every event.
+            // NODE presses stay NODE grabs: a bonded node press runs the
+            // ELASTIC HOLD (pull past one grid step = break), while the
+            // line grab owns the move-as-one translation.
+            let grabRef = hit;
             if (grabRef.mode === 'shape') {
                 const bonds = drawing.connections ?? [];
                 const originals: { [shapeIndex: number]: DrawShape } = { ...grabRef.originals };
@@ -396,6 +395,9 @@ export const nodeEditorPlugin = mountOf(
             // well (pan mode included)
             event.stopImmediatePropagation();
             grab = grabRef;
+            // Record the grab-time node geometry (the release auto-lock's
+            // "did it actually move" signature)
+            grabSig = shapeSig(drawing.shapes[grabRef.shapeIndex]);
             context.drawing({ ...drawing, adjusting: true });
             // 'grabbing' for both gesture kinds — the press committed to a
             // drag either way
@@ -416,6 +418,7 @@ export const nodeEditorPlugin = mountOf(
                     context.drawing().shapes,
                     screen,
                     context.transform(),
+                    context.activeTool() !== null,
                 );
                 setCursor(cursor);
                 return;
@@ -480,14 +483,20 @@ export const nodeEditorPlugin = mountOf(
             }
             const draggedNode = shapeNodes(shape).find((n) => n.id === nodeMode.nodeId);
             if (!draggedNode) return;
-            // ── Bonded node: the ELASTIC HOLD (mid-drag weld) ──
-            // Presses on ALREADY-bonded nodes never get here (the
-            // pointerdown conversion turned them into group grabs). This
-            // path runs for bonds created MID-DRAG by the proximity
-            // connect below — a fresh junction welds to its twin so the
-            // new bond can't silently dissolve; tearing more than a full
-            // grid step past the twin = "purposely break" — the bond
-            // SEVERS and the node follows the pointer freely.
+            // ── Bonded node: the ELASTIC HOLD (pull-to-break) ──
+            // The bond welds the SHAPES (line grabs carry the junction
+            // welded), but grabbing a bonded NODE and dragging it out is
+            // the deliberate break gesture the user asked for ("place my
+            // cursor on and drag it out... it will break the lock"): the
+            // dragged node — whichever node is ON TOP at the junction,
+            // hitTest's pick — resists inside one grid step of its twin
+            // (the lock holds while the pointer bends against it), and
+            // pulling past a full grid step SEVERS every bond on the
+            // node, detaching it from the twin (the twin keeps its
+            // position; both move freely afterwards). The same path also
+            // covers bonds created MID-DRAG by the proximity connect
+            // below: a fresh junction welds to its twin so the new bond
+            // can't silently dissolve.
             const wave = twinPoint(shapes, bonds, {
                 shapeIndex: nodeMode.shapeIndex,
                 nodeId: nodeMode.nodeId,
@@ -606,12 +615,59 @@ export const nodeEditorPlugin = mountOf(
             context.drawing({ ...drawing, connections: remaining });
         };
 
-        // Release the grab — the adjusted/moved geometry is already live in
-        // the state (each move wrote it); only the adjusting flag unwinds.
-        // The cursor re-resolves on the next hover move.
+        // ── RELEASE auto-lock ("drag old shapes into a position where the
+        // nodes share a coordinate → they lock") ──
+        // A finished drag (whole-shape group move OR node adjustment)
+        // runs the SAME drop check a fresh draw gets (autoLockShapes):
+        // exact coincidence bonds everywhere; a MOVED circle additionally
+        // rims onto a lattice node within one grid step (the heal). The
+        // last move frame already wrote the settled geometry into the
+        // drawing state, so the check runs over the LIVE state. Guards:
+        // - Geometry-signature compare: an unchanged grab (a press-click
+        //   that never moved) skips the lock — a mere press must never
+        //   teleport a circle via the heal.
+        // - Node adjustments heal=FALSE (the elastic hold / proximity
+        //   connect already bond intended junctions per-frame; the heal
+        //   must not re-slide a just-adjusted circle). Whole-shape drags
+        //   heal=true (a carried circle settles like a dropped one).
+        // - Only the MOVED shapes participate (the bond group / the
+        //   adjusted shape); static shapes never bond each other.
+        const releaseLock = (grabbedIndex: number, groupMove: boolean) => {
+            const state = context.drawing();
+            const moving = groupMove
+                ? groupOf(state.connections ?? [], grabbedIndex)
+                : [grabbedIndex];
+            const locked = autoLockShapes(state, moving, groupMove);
+            // Write only when the lock changed something (the common
+            // no-contact release is a pure no-op)
+            if (
+                locked.shapes !== state.shapes ||
+                locked.connections !== state.connections
+            ) {
+                context.drawing({
+                    ...state,
+                    shapes: locked.shapes,
+                    connections: locked.connections,
+                });
+            }
+        };
+
+        // Release the grab — the adjusted/moved geometry is already live
+        // in the state (each move wrote it); the adjusting flag unwinds
+        // and the release auto-lock runs for ACTUAL movements.
         const endGrab = () => {
             if (!grab) return;
+            const released = grab;
+            const sig = grabSig;
             grab = null;
+            grabSig = null;
+            // Re-read the LIVE grabbed shape and only lock when the drag
+            // actually moved its nodes
+            const current = context.drawing().shapes[released.shapeIndex];
+            const moved =
+                !!current && (!sig || shapeSig(current) !== sig);
+            if (!moved) return;
+            releaseLock(released.shapeIndex, released.mode === 'shape');
             context.drawing({ ...context.drawing(), adjusting: false });
         };
 
