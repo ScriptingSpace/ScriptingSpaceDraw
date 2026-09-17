@@ -38,6 +38,10 @@ export const PALETTE_GREEN = '#9ece6a';
 export const PALETTE_GOLD = '#e0af68';
 // Red #f7768e (the tokyonight red — storm flavor). Stroke swatch.
 export const PALETTE_RED = '#f7768e';
+// Pink / magenta #ff007c (the tokyonight magenta2 token — verified primary).
+// The ninth default recency block — pink slots between purple and white so
+// the default rainbow reads red → … → purple → pink → white.
+export const PALETTE_PINK = '#ff007c';
 
 // Text colors
 export const PALETTE_TEXT_BRIGHT = '#c0caf5'; // headings, active text
@@ -48,21 +52,52 @@ export const PALETTE_TEXT_FAINT = '#565f89'; // decorative hints (comment)
 // Overlay scrim (Night bg at high alpha)
 export const PALETTE_SCRIM = 'rgba(26, 27, 38, 0.78)';
 
-// DRAW_COLOR_SWATCHES — the stroke colors the right-side palette exposes
-// (the colorPalettePlugin renders one swatch per entry). Rainbow order —
-// red → orange → yellow → green → cyan → blue → purple → white. Every hex
-// is a verified tokyonight storm token, all AA-contrast on the deep well
-// background (#1a1b26), so a stroke in ANY swatch is always visible.
-export const DRAW_COLOR_SWATCHES: string[] = [
-    PALETTE_RED, // #f7768e
-    PALETTE_TERTIARY, // #ff9e64
-    PALETTE_GOLD, // #e0af68
-    PALETTE_GREEN, // #9ece6a
-    PALETTE_CYAN, // #7dcfff
-    PALETTE_ACCENT, // #7aa2f7 (the default stroke color)
-    PALETTE_SECONDARY, // #bb9af7
-    PALETTE_TEXT_BRIGHT, // #c0caf5 (near-white pencil ink)
+// DRAW_MAX_RECENT_COLORS — how many RECENT-ink blocks the right-side
+// palette keeps (most-recent-first; the ledger lives in
+// DrawDrawingState.recentColors). The panel renders this many blocks plus
+// the color-wheel block → the 10-block total the palette exposes.
+export const DRAW_MAX_RECENT_COLORS = 9;
+// DRAW_COLOR_BLOCK_COUNT — the total swatch blocks on the right side:
+// 9 recency blocks + the 10th color-wheel block.
+export const DRAW_COLOR_BLOCK_COUNT = DRAW_MAX_RECENT_COLORS + 1;
+
+// DRAW_DEFAULT_RECENT_COLORS — the DEFAULT content of the recency blocks:
+// the most common drawing inks, in rainbow order (red → orange → yellow →
+// green → cyan → blue → purple → pink → white). Every hex is a verified
+// tokyonight storm token with AA contrast on the deep well (#1a1b26), so a
+// block in ANY position is always visible. The blue accent doubles as the
+// DEFAULT stroke ink (createDrawingState seed — cross-reference:
+// ../plugins/core/DrawPluginContext.ts).
+export const DRAW_DEFAULT_RECENT_COLORS: string[] = [
+    PALETTE_RED, // #f7768e red
+    PALETTE_TERTIARY, // #ff9e64 orange
+    PALETTE_GOLD, // #e0af68 yellow
+    PALETTE_GREEN, // #9ece6a green
+    PALETTE_CYAN, // #7dcfff cyan
+    PALETTE_ACCENT, // #7aa2f7 blue (the default stroke ink)
+    PALETTE_SECONDARY, // #bb9af7 purple
+    PALETTE_PINK, // #ff007c pink
+    PALETTE_TEXT_BRIGHT, // #c0caf5 white (near-white pencil ink)
 ];
+
+// Legacy alias — DRAW_COLOR_SWATCHES named the 8-block rainbow list that
+// pre-dated the recency model. It aliases the default recency list so
+// existing imports keep compiling (same rainbow content, +1 entry).
+export const DRAW_COLOR_SWATCHES: string[] = DRAW_DEFAULT_RECENT_COLORS;
+
+// pushRecentColor — the recency-ledger update rule for an ink SELECTION
+// (swatch click OR color-wheel pick — the single write path, see
+// ../plugins/features/colorPalettePlugin.tsx): the chosen hex moves to the
+// FRONT, a color already listed re-surfaces at the front instead of
+// duplicating, and the list keeps at most `max` entries (the OLDEST falls
+// off past the cap — the 9-block recency window). Pure: returns a new
+// array; the caller writes it into the drawing state. Defensive `?? []`
+// so a null/third-party ledger still yields a valid single-entry list.
+export const pushRecentColor = (
+    colors: string[],
+    color: string,
+    max: number = DRAW_MAX_RECENT_COLORS,
+): string[] => [color, ...(colors ?? []).filter((entry) => entry !== color)].slice(0, max);
 
 // DrawPalette — the aggregated token bundle passed to plugins through the
 // DrawPluginContext (see ../plugins/core/DrawPluginContext.ts). Plugins read
@@ -87,8 +122,11 @@ export type DrawPalette = {
     textMuted: string;
     textFaint: string;
     scrim: string;
-    // The stroke swatch colors (the right-side palette's entries — the
-    // colorPalettePlugin reads them through the context)
+    // The DEFAULT recency blocks (the right-side panel's most-common-color
+    // seed — the LIVE recency ledger flows through the drawing state:
+    // DrawDrawingState.recentColors). The colorPalettePlugin reads these as
+    // the defensive fallback for third-party drawing states that pre-date
+    // the ledger field.
     swatches: string[];
 };
 

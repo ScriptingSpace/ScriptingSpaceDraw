@@ -43,6 +43,7 @@ import {
     nodeEditorPlugin,
     toolRouterPlugin,
     drawingLayerPlugin,
+    selectionPlugin,
 } from '../plugins';
 import { createDrawingState } from '../plugins/core/DrawPluginContext';
 
@@ -89,8 +90,10 @@ import { createDrawingState } from '../plugins/core/DrawPluginContext';
 //     panOnWheelPlugin      — horizontal wheel → pan left/right
 //     dragToPanPlugin       — drag gestures → grab-the-paper pan
 //     toolbarPlugin         — bottom-center tool buttons (tool-agnostic)
-//     colorPalettePlugin    — right-side stroke palette (while a tool is
-//                             armed; writes context.drawing().color)
+//     colorPalettePlugin    — right-side palette: 9 recency-ink blocks +
+//                             a 10th color-wheel block (while a tool is
+//                             armed; writes context.drawing().color +
+//                             .recentColors)
 //     …tool plugins         — circle / rectangle / line (straight by
 //                             default — the middle node bends it; all
 //                             grid-locked, "This isn't free form")
@@ -100,6 +103,10 @@ import { createDrawingState } from '../plugins/core/DrawPluginContext';
 //                             stopImmediatePropagation)
 //     toolRouterPlugin      — routes pointer events to the active tool
 //     drawingLayerPlugin    — renders committed shapes + the live draft
+//     selectionPlugin       — LEFT-drag marquee (rubber-band multi-select,
+//                             bond-aware) + selection markers + multi-move
+//                             via nodeEditor (the left-drag PAN was removed;
+//                             right/middle/space still pan)
 //
 // LAYOUT (unchanged contract): the canvas fills the ENTIRE viewport. No
 // header, no footer. POINTER MATH: viewport-relative pixels via
@@ -130,7 +137,11 @@ const DashboardRoot = styledComponent('div', {
 // Ref-forwarding cast: the styledComponent return type (React.FC) lacks
 // `ref` — Emotion forwards it at runtime (same cast pattern documented in
 // the presource styledComponent notes).
-const CanvasSurface = styledComponent<{ toolArmed: boolean }>(
+// CURSOR: crosshair in BOTH idle and tool-armed states — idle left-drag is
+// the selection marquee (a drawn-box affordance), armed left-drag draws.
+// The node editor overrides imperatively on node ('grab') / body ('pointer')
+// hovers (cross-reference: nodeEditorPlugin.tsx).
+const CanvasSurface = styledComponent(
     'div',
     {
         position: 'absolute' as const,
@@ -139,13 +150,10 @@ const CanvasSurface = styledComponent<{ toolArmed: boolean }>(
         right: 0,
         bottom: 0,
         overflow: 'hidden' as const,
-        // Cursor reflects the button map: crosshair while a tool is armed
-        // (left-drag draws), grab when no tool is active (left-drag pans —
-        // and right-drag always pans)
-        cursor: ({ toolArmed }) => (toolArmed ? 'crosshair' : 'grab'),
+        cursor: 'crosshair',
     },
 ) as unknown as React.FC<
-    { toolArmed: boolean } & React.HTMLAttributes<HTMLDivElement> & {
+    React.HTMLAttributes<HTMLDivElement> & {
         ref?: React.Ref<HTMLDivElement>;
     }
 >;
@@ -179,7 +187,8 @@ const registerCorePlugins = (api: DrawPluginApi) => {
 //   appears while a tool is armed) → TOOL PLUGINS (register their tool
 //   definitions BEFORE the router mounts) → NODE EDITOR (grabs node drags
 //   before the router — listener order = registration order) → tool router
-//   → drawing layer.
+//   → drawing layer → SELECTION (left-drag marquee + markers; registered
+//   last so a shape grab / tool draw already claimed the press).
 const registerDefaultPlugins = (api: DrawPluginApi) => {
     api.register('grid', gridPlugin);
     api.register('coordinate-hud', coordinateHudPlugin);
@@ -194,8 +203,9 @@ const registerDefaultPlugins = (api: DrawPluginApi) => {
     // the active tool) → drawing layer (renders committed shapes + the
     // live draft)
     api.register('toolbar', toolbarPlugin);
-    // The stroke-color palette — writes context.drawing().color; reads the
-    // swatch list through context.palette (color-agnostic render)
+    // The stroke-color palette — writes context.drawing().color +
+    // .recentColors (the recency ledger); reads the default recency seed
+    // through context.palette (color-agnostic render)
     api.register('color-palette', colorPalettePlugin);
     api.register('circle-tool', circleToolPlugin);
     api.register('rectangle-tool', rectangleToolPlugin);
@@ -203,6 +213,11 @@ const registerDefaultPlugins = (api: DrawPluginApi) => {
     api.register('node-editor', nodeEditorPlugin);
     api.register('tool-router', toolRouterPlugin);
     api.register('drawing-layer', drawingLayerPlugin);
+    // The selection system (registers LAST so its listener runs after both
+    // the node editor — which may claim a shape grab — and the tool router,
+    // both of which own left presses first; renders the marquee box +
+    // selection markers above the drawing layer)
+    api.register('selection', selectionPlugin);
 };
 
 export const DrawDashboard = React.memo(() => {
@@ -233,7 +248,7 @@ export const DrawDashboard = React.memo(() => {
 
     // The ACTIVE tool id (STATE — writes re-render so the toolbar
     // highlights the active button and the router reads the fresh id).
-    // Null = no tool → left-drag pans the canvas.
+    // Null = no tool → left-drag is the selection marquee (never a pan).
     const activeTool = useStateHook<string | null>(null);
 
     // Drawing state (ref-backed — tool handlers write shapes/drafts through
@@ -350,11 +365,11 @@ export const DrawDashboard = React.memo(() => {
 
     return (
         <DashboardRoot data-testid="dashboard-root">
-            {/* toolArmed drives the cursor: crosshair while a tool is
-                selected (left-drag draws), grab when idle (left-drag pans) */}
+                {/* crosshair in both states: a tool draws with it, idle
+                    left-drag runs the selection marquee. The node editor
+                    overrides imperatively on node/body hovers. */}
             <CanvasSurface
                 ref={handleSurfaceRef}
-                toolArmed={activeTool() !== null}
                 data-testid="canvas-surface"
             >
                 {/* Every plugin's UI node, collected by the execution loop.

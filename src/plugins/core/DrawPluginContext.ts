@@ -31,8 +31,8 @@
 
 import type { CanvasTransform } from '../../functions/canvasTransform';
 import type { DrawPalette } from '../../functions/palette';
-import { PALETTE_ACCENT } from '../../functions/palette';
-import type { DrawShape } from '../../functions/shapes';
+import { PALETTE_ACCENT, DRAW_DEFAULT_RECENT_COLORS } from '../../functions/palette';
+import type { DrawPoint, DrawShape } from '../../functions/shapes';
 import type { DrawBond } from '../../functions/connection';
 import type { DrawToolRegistry } from './DrawToolRegistry';
 
@@ -102,11 +102,36 @@ export type DrawDrawingState = {
     // read this to yield the left button to node dragging — in pan mode
     // AND tool mode alike.
     adjusting: boolean;
-    // The ACTIVE stroke color (hex from context.palette.swatches). New
-    // shapes are stamped with it at drag time (tool plugins read it when
-    // writing the draft); the committed shape keeps the creation-time ink.
-    // Written by the colorPalettePlugin's swatch buttons.
+    // The ACTIVE stroke color (hex — a recency-block color or a wheel-picked
+    // custom ink). New shapes are stamped with it at drag time (tool plugins
+    // read it when writing the draft); the committed shape keeps the
+    // creation-time ink. Written by the colorPalettePlugin (swatch buttons
+    // AND the color wheel).
     color: string;
+    // The RECENCY LEDGER of stroke inks (most-recent-first) — the content of
+    // the right-side palette's recency blocks. Capped at DRAW_MAX_RECENT_COLORS
+    // entries; every selection (swatch click or color-wheel pick) moves its
+    // color to the front via pushRecentColor (cross-reference:
+    // ../../functions/palette.ts). Seeded with the most common colors
+    // (DRAW_DEFAULT_RECENT_COLORS — the "by default, set the most common
+    // color" contract). 10th block = the color wheel (no hex entry).
+    recentColors: string[];
+    // The SELECTION (multi-select from the left-drag marquee): indices into
+    // the shapes array, stored BOND-EXPANDED (each pick arrives already
+    // expanded through the endpoint-bond chain — "jointed shapes are
+    // selected together", cross-reference: functions/selection.ts). Ephemeral
+    // UI state — written by selectionPlugin (marquee release) and
+    // nodeEditorPlugin (grabbing a shape re-skims the selection to that
+    // shape's bond group; grabbing a selected shape KEEPS the multi-select).
+    // Grabbing a selected shape also moves every member (multi-move).
+    selection: number[];
+    // The LIVE RUBBER-BAND BOX of an in-flight marquee drag (world-space:
+    // anchored to the plane like the shapes — panning never runs mid-marquee
+    // so the anchor stays stable). start = press anchor; current = live
+    // pointer point. Null when no marquee drag is running. Written by
+    // selectionPlugin (owns the left-drag gesture in pan mode), rendered by
+    // the same plugin, consumed at release through selectShapesInBounds.
+    marquee: { start: DrawPoint; current: DrawPoint } | null;
     // The ENDPOINT BONDS (cross-reference: functions/connection.ts) — two
     // shapes sharing an endpoint MOVE AS ONE UNIT until the user breaks
     // the node. Plain data (shapeIndex + nodeId pairs), resolved against
@@ -116,14 +141,20 @@ export type DrawDrawingState = {
 };
 
 // Initial drawing state — the DEFAULT ink is the palette's primary accent
-// (the palette swatch list, cross-reference: ../functions/palette.ts
-// DRAW_COLOR_SWATCHES).
+// (shown pre-selected in the recency blocks) and the recency ledger seeds
+// with the MOST COMMON colors (rainbow — cross-reference:
+// ../../functions/palette.ts DRAW_DEFAULT_RECENT_COLORS). Both default
+// fields are COPIES: the constant arrays must survive the session, third
+// parties may mutate the state they read.
 export const createDrawingState = (): DrawDrawingState => ({
     shapes: [],
     draft: null,
     drawing: false,
     adjusting: false,
     color: PALETTE_ACCENT,
+    recentColors: [...DRAW_DEFAULT_RECENT_COLORS],
+    selection: [],
+    marquee: null,
     connections: [],
 });
 // The context bundle itself

@@ -16,3 +16,4 @@ export * from './shapeToolPlugins';
 export * from './nodeEditorPlugin';
 export * from './toolRouterPlugin';
 export * from './drawingLayerPlugin';
+export * from './selectionPlugin';

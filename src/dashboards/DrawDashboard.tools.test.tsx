@@ -96,7 +96,7 @@ describe('toolbar — the tool-agnostic bar', () => {
         expect(screen.getByTestId('tool-circle').getAttribute('aria-pressed')).toBe('true');
 
         // While a tool is active, left-drag no longer pans (the tool owns
-        // it). NOTE: the pan-drag press must stay > 10px away from any
+        // it). NOTE: the draw-drag press must stay > 10px away from any
         // committed shape node — a node press belongs to the node editor.
         fireEvent.pointerDown(surface, { clientX: 250, clientY: 150, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 350, clientY: 200 });
@@ -107,11 +107,28 @@ describe('toolbar — the tool-agnostic bar', () => {
         fireEvent.click(screen.getByTestId('tool-circle'));
         expect(screen.getByTestId('tool-circle').getAttribute('aria-pressed')).toBe('false');
 
-        // Left-drag pans again — clear of the drawn circle's nodes
+        // Left-drag on empty canvas is the SELECTION marquee now — it never
+        // pans (right/middle/space drags still pan) and never draws. The
+        // box over empty space selects nothing and clears on release.
         fireEvent.pointerDown(surface, { clientX: 250, clientY: 150, button: 0 });
+        // The live dashed box renders while the drag runs
+        const marquee = screen.getByTestId('marquee-box');
+        expect(marquee.getAttribute('x')).toBe('250');
+        expect(marquee.getAttribute('y')).toBe('150');
+        expect(marquee.getAttribute('width')).toBe('0');
+        expect(marquee.getAttribute('height')).toBe('0');
         fireEvent.pointerMove(surface, { clientX: 350, clientY: 200 });
+        expect(screen.getByTestId('marquee-box').getAttribute('width')).toBe('100');
         fireEvent.pointerUp(surface, {});
-        expect(readOriginCross()).toEqual({ x: 500, y: 350 });
+        // The box pulled away and unmounted on release; the view never
+        // panned (no pan), and nothing was DRAWN. The marquee DID select
+        // the circle phase 1 committed (world bounds touch the box) —
+        // exactly one bounds marker, for shape index 0.
+        expect(screen.queryByTestId('marquee-box')).toBeNull();
+        expect(screen.getByTestId('selection-marker-0')).toBeDefined();
+        expect(screen.queryByTestId('selection-marker-1')).toBeNull();
+        expect(readOriginCross()).toEqual({ x: 400, y: 300 });
+        expect(committedElements().length).toBe(1);
     });
 
     it('switches directly between tools (click rectangle while circle is active)', () => {
@@ -406,17 +423,15 @@ describe('shape tools — coexistence with pan/zoom', () => {
         expect(committedElements().length).toBe(0);
     });
 
-    it('the surface cursor is crosshair while a tool is armed, grab when idle', () => {
+    it('the surface cursor is crosshair armed AND idle (draw + marquee affordance)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
         // jsdom's getComputedStyle does NOT resolve Emotion's injected
         // stylesheet rules (cursor reads as 'auto'), so the assertion reads
-        // the CSSOM directly. NOTE: the cursor is a FUNCTION value in the
-        // styledComponent input — function values resolve through the
-        // breakpoint machinery (styleStructure → { xs: value }) and land
-        // inside an `@media (min-width: 0px)` CSSMediaRule, so the scan
-        // RECURSES into media rules.
+        // the CSSOM directly. NOTE: the cursor is a STATIC value in the
+        // styledComponent input now (no breakpoint machinery), but the scan
+        // still recurses into media rules — it covers both input shapes.
         const cursorOf = (element: HTMLElement): string | null => {
             let found: string | null = null;
             const scanRules = (rules: CSSRuleList) => {
@@ -441,14 +456,14 @@ describe('shape tools — coexistence with pan/zoom', () => {
             return found;
         };
 
-        // No tool → grab (left-drag pans)
-        expect(cursorOf(surface)).toBe('grab');
+        // Idle → crosshair (the left drag is the selection marquee now)
+        expect(cursorOf(surface)).toBe('crosshair');
         // Arm the line → crosshair (left-drag draws)
         fireEvent.click(screen.getByTestId('tool-line'));
         expect(cursorOf(surface)).toBe('crosshair');
-        // Deactivate → back to grab
+        // Deactivate → still crosshair (marquee affordance)
         fireEvent.click(screen.getByTestId('tool-line'));
-        expect(cursorOf(surface)).toBe('grab');
+        expect(cursorOf(surface)).toBe('crosshair');
     });
 
     it('multiple shapes accumulate in the drawing layer (tags per kind)', () => {
@@ -477,20 +492,23 @@ describe('shape tools — coexistence with pan/zoom', () => {
     });
 });
 
-describe('color palette — the right-side stroke chooser', () => {
-    // The palette swatches — MUST mirror functions/palette.ts
-    // DRAW_COLOR_SWATCHES (rainbow order: red → orange → yellow → green →
-    // cyan → blue → purple → white)
+describe('color palette — the 9 recency blocks + the 10th color wheel', () => {
+    // The default recency blocks — MUST mirror functions/palette.ts
+    // DRAW_DEFAULT_RECENT_COLORS (rainbow order: red → orange → yellow →
+    // green → cyan → blue → purple → pink → white)
     const SWATCHES = [
         '#f7768e', // red
         '#ff9e64', // orange (tertiary)
-        '#e0af68', // gold
+        '#e0af68', // yellow (gold)
         '#9ece6a', // green
         '#7dcfff', // cyan
-        '#7aa2f7', // accent (the default ink)
-        '#bb9af7', // secondary (purple)
-        '#c0caf5', // text bright (near-white)
+        '#7aa2f7', // blue accent (the default ink)
+        '#bb9af7', // purple (secondary)
+        '#ff007c', // pink
+        '#c0caf5', // white (text bright)
     ];
+
+    const readWheel = () => screen.getByTestId('color-wheel');
 
     it('appears on the right side only while a tool is armed', () => {
         render(<DrawDashboard />);
@@ -506,20 +524,163 @@ describe('color palette — the right-side stroke chooser', () => {
         expect(screen.queryByTestId('color-palette')).toBeNull();
     });
 
-    it('renders exactly the 8 palette swatches, each labeled with its hex', () => {
+    it('renders the 9 default recency blocks + the color wheel as the 10th block', () => {
         render(<DrawDashboard />);
         stubSurfaceRect();
         fireEvent.click(screen.getByTestId('tool-line'));
 
-        // One swatch per DRAW_COLOR_SWATCHES entry, in rainbow order
+        // One block per DRAW_DEFAULT_RECENT_COLORS entry, in rainbow order
         const swatches = SWATCHES.map((hex) => screen.getByTestId(`color-swatch-${hex}`));
-        expect(swatches.length).toBe(8);
+        expect(swatches.length).toBe(9);
         // Each tooltip + aria label carries the EXACT hex (no color
         // knowledge inside the plugin — pure palette passthrough)
         expect(swatches.map((swatch) => swatch.getAttribute('title'))).toEqual(SWATCHES);
         expect(swatches.map((swatch) => swatch.getAttribute('aria-label'))).toEqual(
             SWATCHES.map((hex) => `Stroke color ${hex}`),
         );
+
+        // The color wheel rides as the LAST block of the 10
+        expect(readWheel().getAttribute('title')).toBe('Pick any color');
+        expect(readWheel().nextElementSibling).toBeNull();
+        // The hidden native color input backs the wheel (real <input
+        // type=color> — clicking it opens the browser's color wheel)
+        expect(readWheel().querySelector('input[type="color"]')).not.toBeNull();
+        // The wheel input is seeded with the CURRENT ink (the default
+        // accent) so the dialog opens tuned to the active color
+        const wheelInput = readWheel().querySelector('input[type="color"]');
+        expect(wheelInput?.getAttribute('value')).toBe('#7aa2f7');
+        expect(wheelInput?.getAttribute('aria-label')).toBe('Custom color wheel');
+    });
+
+    it('selecting a swatch moves that color to the FRONT of the block list', () => {
+        render(<DrawDashboard />);
+        stubSurfaceRect();
+        fireEvent.click(screen.getByTestId('tool-line'));
+
+        // Pick the green block — the ledger re-surfaces it at the front
+        fireEvent.click(screen.getByTestId('color-swatch-#9ece6a'));
+        // Exact block order after the pick (read in DOM order): green
+        // jumped to block 1, the rest kept their rainbow rotation; the
+        // wheel still owns the 10th slot
+        const titles = Array.from(
+            screen.getByTestId('color-palette').querySelectorAll('[data-testid^="color-swatch-"]'),
+        ).map((block) => block.getAttribute('title'));
+        expect(titles).toEqual([
+            '#9ece6a',
+            '#f7768e',
+            '#ff9e64',
+            '#e0af68',
+            '#7dcfff',
+            '#7aa2f7',
+            '#bb9af7',
+            '#ff007c',
+            '#c0caf5',
+        ]);
+        expect(readWheel().nextElementSibling).toBeNull();
+    });
+
+    it('a wheel pick enters the ledger at the front, becomes the ink, and draws with it', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+        fireEvent.click(screen.getByTestId('tool-line'));
+
+        // Pick an arbitrary color off the wheel — the native input's change
+        // event carries the picked hex (jsdom simulates the dialog outcome)
+        fireEvent.change(screen.getByTestId('color-wheel-input'), {
+            target: { value: '#8844ff' },
+        });
+
+        // The custom ink surfaced as the FIRST block, ringed as active; the
+        // 10-block column re-anchored: the OLDEST default (white) fell off
+        expect(screen.getByTestId('color-swatch-#8844ff').getAttribute('aria-pressed')).toBe(
+            'true',
+        );
+        const titles = Array.from(
+            screen.getByTestId('color-palette').querySelectorAll('[data-testid^="color-swatch-"]'),
+        ).map((block) => block.getAttribute('title'));
+        expect(titles).toEqual([
+            '#8844ff',
+            '#f7768e',
+            '#ff9e64',
+            '#e0af68',
+            '#9ece6a',
+            '#7dcfff',
+            '#7aa2f7',
+            '#bb9af7',
+            '#ff007c',
+        ]);
+        expect(screen.queryByTestId('color-swatch-#c0caf5')).toBeNull();
+        expect(readWheel().nextElementSibling).toBeNull();
+
+        // A stroke drawn after the pick commits with the custom ink
+        fireEvent.click(screen.getByTestId('tool-circle'));
+        fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        const shapes = committedElements();
+        expect(shapes.length).toBe(1);
+        expect(shapes[0].tagName).toBe('circle');
+        expect(shapes[0].getAttribute('stroke')).toBe('#8844ff');
+    });
+
+    it('a second wheel pick evicts the next-oldest entry (ledger caps at 9)', () => {
+        render(<DrawDashboard />);
+        stubSurfaceRect();
+        fireEvent.click(screen.getByTestId('tool-line'));
+
+        fireEvent.change(screen.getByTestId('color-wheel-input'), {
+            target: { value: '#8844ff' },
+        });
+        fireEvent.change(screen.getByTestId('color-wheel-input'), {
+            target: { value: '#22aa99' },
+        });
+
+        // Ledger order after two wheel picks: newest, then the first pick,
+        // then the remaining defaults (red…pink — pink fell off this time)
+        const titles = Array.from(
+            screen.getByTestId('color-palette').querySelectorAll('[data-testid^="color-swatch-"]'),
+        ).map((block) => block.getAttribute('title'));
+        expect(titles).toEqual([
+            '#22aa99',
+            '#8844ff',
+            '#f7768e',
+            '#ff9e64',
+            '#e0af68',
+            '#9ece6a',
+            '#7dcfff',
+            '#7aa2f7',
+            '#bb9af7',
+        ]);
+        // The second pick is the active ink
+        expect(screen.getByTestId('color-swatch-#22aa99').getAttribute('aria-pressed')).toBe(
+            'true',
+        );
+    });
+
+    it('re-picking an existing ledger color re-surfaces it without duplicating', () => {
+        render(<DrawDashboard />);
+        stubSurfaceRect();
+        fireEvent.click(screen.getByTestId('tool-line'));
+
+        // Pick red (already listed at the front-ish) then blue — then red
+        // again: red must return to the front ONCE, never double up
+        fireEvent.click(screen.getByTestId('color-swatch-#f7768e'));
+        fireEvent.click(screen.getByTestId('color-swatch-#7aa2f7'));
+        fireEvent.click(screen.getByTestId('color-swatch-#f7768e'));
+        const blocks = Array.from(
+            screen.getByTestId('color-palette').querySelectorAll('[data-testid^="color-swatch-"]'),
+        ).map((block) => block.getAttribute('title'));
+        expect(blocks).toEqual([
+            '#f7768e',
+            '#7aa2f7',
+            '#ff9e64',
+            '#e0af68',
+            '#9ece6a',
+            '#7dcfff',
+            '#bb9af7',
+            '#ff007c',
+            '#c0caf5',
+        ]);
     });
 
     it('the default ink is the palette accent — strokes draw in it', () => {
@@ -618,6 +779,205 @@ describe('color palette — the right-side stroke chooser', () => {
         fireEvent.pointerMove(surface, { clientX: 300, clientY: 200 });
         fireEvent.pointerUp(surface, {});
         expect(committedElements().length).toBe(0);
+    });
+});
+
+describe('selection — left-drag marquee (multi-select, jointed picks, multi-move)', () => {
+    // Draws a circle at the world origin (center (0,0), r 100) and returns
+    // to pan mode. Screen bounds: (300,200)-(500,400).
+    const drawOriginCircle = () => {
+        const surface = screen.getByTestId('canvas-surface');
+        fireEvent.click(screen.getByTestId('tool-circle'));
+        fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-circle'));
+    };
+
+    // Draws a 2×1 rect at world (200,−200)..(300,−100) — unjointed screen
+    // bounds (600,100)-(700,200) — and returns to pan mode
+    const drawRightRect = () => {
+        const surface = screen.getByTestId('canvas-surface');
+        fireEvent.click(screen.getByTestId('tool-rectangle'));
+        fireEvent.pointerDown(surface, { clientX: 600, clientY: 100, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 700, clientY: 200 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-rectangle'));
+    };
+
+    // The data-testids of the selection markers in DOM order
+    const markerIds = (): string[] => {
+        const overlay = screen.queryByTestId('selection-overlay');
+        if (!overlay) return [];
+        return Array.from(overlay.querySelectorAll('[data-testid^="selection-marker-"]')).map(
+            (marker) => marker.getAttribute('data-testid') ?? '',
+        );
+    };
+
+    it('a box across shapes selects every shape it touches (live box + markers)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        drawOriginCircle();
+        drawRightRect();
+        expect(screen.queryByTestId('selection-overlay')).toBeNull(); // nothing yet
+
+        // Marquee over BOTH shapes: down (350,150), drag to (650,320). The
+        // live dashed box renders the drag in screen space (world box
+        // (−50,−150)..(250,20) at pan (−400,−300) → 350,150 300×170).
+        fireEvent.pointerDown(surface, { clientX: 350, clientY: 150, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 650, clientY: 320 });
+        const box = screen.getByTestId('marquee-box');
+        expect(box.getAttribute('x')).toBe('350');
+        expect(box.getAttribute('y')).toBe('150');
+        expect(box.getAttribute('width')).toBe('300');
+        expect(box.getAttribute('height')).toBe('170');
+        // The marquee never pans the canvas
+        expect(readOriginCross()).toEqual({ x: 400, y: 300 });
+        fireEvent.pointerUp(surface, {});
+        // Box gone; exactly the two crossed shapes carry markers
+        expect(screen.queryByTestId('marquee-box')).toBeNull();
+        expect(markerIds()).toEqual(['selection-marker-0', 'selection-marker-1']);
+        expect(readOriginCross()).toEqual({ x: 400, y: 300 });
+    });
+
+    it('jointed shapes are selected together (a circle-only box pulls the bonded line)', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Circle + a line drawn FROM the circle's center node (tool
+        // precedence: the draw starts on the node, then the commit drop
+        // check bonds TWO junctions — line.start↔circle.center AND
+        // line.end↔circle.rim e)
+        drawOriginCircle();
+        fireEvent.click(screen.getByTestId('tool-line'));
+        fireEvent.pointerDown(surface, { clientX: 400, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 500, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-line')); // disarm
+
+        // Box covering ONLY the circle (world (−90,−90)..(−10,−10) — the
+        // line's world bounds (0..100, 0) stay clear of it)
+        fireEvent.pointerDown(surface, { clientX: 310, clientY: 210, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 390, clientY: 290 });
+        fireEvent.pointerUp(surface, {});
+
+        // The BOND EXPANSION: the bounds touched just the circle, but its
+        // bonded line joins the selection
+        expect(markerIds()).toEqual(['selection-marker-0', 'selection-marker-1']);
+    });
+
+    it('a click on empty canvas deselects everything', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        drawOriginCircle();
+        // Box a sliver over the circle → selected
+        fireEvent.pointerDown(surface, { clientX: 350, clientY: 250, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 450, clientY: 350 });
+        fireEvent.pointerUp(surface, {});
+        expect(markerIds()).toEqual(['selection-marker-0']);
+
+        // A zero-drag click on empty space (200,500 — ≥10px off every node
+        // and the stroke) never starts a marquee that lives: release →
+        // zero-step box = bare click → the selection CLEARS.
+        fireEvent.pointerDown(surface, { clientX: 200, clientY: 500, button: 0 });
+        fireEvent.pointerUp(surface, {});
+        expect(markerIds()).toEqual([]);
+        expect(screen.queryByTestId('marquee-box')).toBeNull();
+        expect(screen.queryByTestId('selection-overlay')).toBeNull();
+    });
+
+    it('grabbing an UNselected shape re-skims the selection to its bond group', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        drawOriginCircle();
+        drawRightRect();
+        // Box over ONLY the rect (world (120,−250)..(360,−110) — clear of
+        // the circle's bounds x ≤ 100)
+        fireEvent.pointerDown(surface, { clientX: 520, clientY: 50, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 760, clientY: 190 });
+        fireEvent.pointerUp(surface, {});
+        expect(markerIds()).toEqual(['selection-marker-1']);
+
+        // Grab the CIRCLE's stroke (southeast 45° rim spot) — an unselected
+        // shape: the selection re-skims to JUST that shape (unbonded here)
+        fireEvent.pointerDown(surface, { clientX: 471, clientY: 371, button: 0 });
+        // Selection already follows the grab (press without move)
+        expect(markerIds()).toEqual(['selection-marker-0']);
+        // Drag +100 → the whole circle translates (the grab move)
+        fireEvent.pointerMove(surface, { clientX: 571, clientY: 371 });
+        fireEvent.pointerUp(surface, {});
+        expect(committedElements()[0].getAttribute('cx')).toBe('500');
+        expect(committedElements()[0].getAttribute('cy')).toBe('300');
+        // Only the circle stays selected; the rect never moved
+        expect(markerIds()).toEqual(['selection-marker-0']);
+        expect(committedElements()[1].getAttribute('x')).toBe('600');
+        expect(readOriginCross()).toEqual({ x: 400, y: 300 });
+    });
+
+    it('multi-move: dragging one member translates EVERY selected shape', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        // Circle at the origin + an unjointed rect below-right at world
+        // (200,0)..(300,100) — screen (600,300)-(700,400)
+        drawOriginCircle();
+        fireEvent.click(screen.getByTestId('tool-rectangle'));
+        fireEvent.pointerDown(surface, { clientX: 600, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 700, clientY: 400 });
+        fireEvent.pointerUp(surface, {});
+        fireEvent.click(screen.getByTestId('tool-rectangle')); // disarm
+
+        // Marquee BOTH: box world (−50,−50)..(350,50) touches the circle
+        // bounds (−100..100, −100..100) and the rect bounds (200..300, 0..100)
+        fireEvent.pointerDown(surface, { clientX: 350, clientY: 250, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 750, clientY: 350 });
+        fireEvent.pointerUp(surface, {});
+        expect(markerIds()).toEqual(['selection-marker-0', 'selection-marker-1']);
+
+        // Grab the RECT top edge midway between corners a (600,300) and
+        // b (700,300) — (650,300) — and drag +100: BOTH shapes move as
+        // the multi-select translation (each by the same snapped delta).
+        fireEvent.pointerDown(surface, { clientX: 650, clientY: 300, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 750, clientY: 300 });
+        fireEvent.pointerUp(surface, {});
+
+        // Circle +100 world → cx 500; rect min (300,0) → screen x 700
+        const shapes = committedElements();
+        expect(shapes[0].getAttribute('cx')).toBe('500');
+        expect(shapes[0].getAttribute('cy')).toBe('300');
+        expect(shapes[1].getAttribute('x')).toBe('700');
+        expect(shapes[1].getAttribute('y')).toBe('300');
+        expect(shapes[1].getAttribute('width')).toBe('100');
+        expect(shapes[1].getAttribute('height')).toBe('100');
+        // The selection rides along (markers for both, from live geometry)
+        expect(markerIds()).toEqual(['selection-marker-0', 'selection-marker-1']);
+        // The grab never panned
+        expect(readOriginCross()).toEqual({ x: 400, y: 300 });
+    });
+
+    it('a marquee press never draws NOR pans, even with a selection active', () => {
+        render(<DrawDashboard />);
+        const surface = stubSurfaceRect();
+
+        drawOriginCircle();
+        // Select the circle first
+        fireEvent.pointerDown(surface, { clientX: 350, clientY: 250, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 450, clientY: 350 });
+        fireEvent.pointerUp(surface, {});
+        expect(markerIds()).toEqual(['selection-marker-0']);
+
+        // Re-marquee to a region that misses the circle: no shape commits,
+        // no pan, and the old selection clears (the fresh box decides)
+        fireEvent.pointerDown(surface, { clientX: 100, clientY: 100, button: 0 });
+        fireEvent.pointerMove(surface, { clientX: 180, clientY: 180 });
+        fireEvent.pointerUp(surface, {});
+        expect(markerIds()).toEqual([]);
+        expect(committedElements().length).toBe(1);
+        expect(readOriginCross()).toEqual({ x: 400, y: 300 });
+        expect(screen.queryByTestId('marquee-box')).toBeNull();
     });
 });
 
@@ -725,8 +1085,8 @@ describe('node editor — click-drag adjustment of shape nodes', () => {
         expect(surfaceCursor()).toBe('pointer');
         // Hovering just outside everything (top rim is y=200 with r 100:
         // (400,250) is 50px inside-top — clears the center node by 50px and
-        // the rim by 50px) → no override — the class cursor (grab for pan
-        // mode) resurfaces
+        // the rim by 50px) → no override — the class cursor (crosshair for
+        // the marquee) resurfaces as ''
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 250 });
         expect(surfaceCursor()).toBe('');
         // Dead center (inside, far from the rim) → the center-node cursor
@@ -1776,8 +2136,10 @@ describe('gesture unwind — a no-move grab must never latch the adjusting flag'
     let originPrev = { x: 400, y: 300 };
 
     // Proves both gates are ALIVE after the suspicious gesture: a fresh
-    // 1-step line commits (draw gate open) and a left-drag on empty canvas
-    // pans by exactly the pointer delta (pan gate open).
+    // 1-step line commits (draw gate open) and a space+left drag on empty
+    // canvas pans by exactly the pointer delta (pan gate open — the plain
+    // left drag is the selection marquee now, so the pan probe rides the
+    // power-user override which runs the SAME mayPan gate chain).
     const expectDrawingAlive = () => {
         fireEvent.click(screen.getByTestId('tool-line'));
         fireEvent.pointerDown(screen.getByTestId('canvas-surface'), { clientX: 200, clientY: 300, button: 0 });
@@ -1789,14 +2151,18 @@ describe('gesture unwind — a no-move grab must never latch the adjusting flag'
         expect(committedElements()[1].getAttribute('d')).toBe('M 200 300 Q 250 300 300 300');
         fireEvent.click(screen.getByTestId('tool-line')); // disarm
         // Empty spot (100,500): ≥10px screen from every committed shape's
-        // nodes, off every stroke — the press is a plain pan drag
+        // nodes, off every stroke — with space held the press is a pan drag
         const surface = screen.getByTestId('canvas-surface');
+        fireEvent.keyDown(window, { code: 'Space' });
         fireEvent.pointerDown(surface, { clientX: 100, clientY: 500, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 200, clientY: 500 });
         fireEvent.pointerUp(surface, {});
+        fireEvent.keyUp(window, { code: 'Space' });
         const origin = readOriginCross();
         expect(origin.x).toBe(originPrev.x + 100);
         expect(origin.y).toBe(originPrev.y);
+        // And no marquee box latched (the space press never started one)
+        expect(screen.queryByTestId('marquee-box')).toBeNull();
     };
 
     it('a click on a node with NO move keeps drawing AND panning alive', () => {

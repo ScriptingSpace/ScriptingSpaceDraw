@@ -95,7 +95,8 @@ import { autoLockShapes } from './shapeToolPlugins';
 import type { DrawPoint, DrawShape } from '../../functions/shapes';
 import { BASE_SPACING, canvasToScreen, screenToCanvas, snapToGrid } from '../../functions/canvasTransform';
 import type { CanvasTransform } from '../../functions/canvasTransform';
-import { bondsOf, breakAt, connect, groupOf, twinPoint } from '../../functions/connection';
+import { bondsOf, breakAt, connect, twinPoint } from '../../functions/connection';
+import { movingSetOf } from '../../functions/selection';
 import { mountOf } from '../core/DrawPluginRegistry';
 import type { DrawPlugin, DrawPluginContext } from '../core';
 
@@ -130,6 +131,12 @@ type GrabRef =
           shapeIndex: number;
           anchor: DrawPoint;
           originals: { [shapeIndex: number]: DrawShape };
+          // The MULTI-MOVE seeds — the drawing-state selection indices the
+          // grab translated (see handlePointerDown). Every pointermove +
+          // the release auto-lock re-resolve the FULL moving set as the
+          // union of bond groups over these seeds, so a multi-select drag
+          // carries every member and a single-grab stays a group move.
+          movingSeeds: number[];
       };
 
 // Viewport-relative screen point from a raw event (lazy rect read — the
@@ -167,13 +174,16 @@ const hitTest = (
         }
         // Then the line itself (the whole-shape move grab). The originals
         // map starts with just the grabbed shape — handlePointerDown
-        // extends it to the full bond-connected group below
+        // extends it to the full moving set below (seeds start on the
+        // grabbed shape alone; a selection that includes the grab widens
+        // them at pointerdown)
         if (distanceToShape(shape, world) <= radius) {
             return {
                 mode: 'shape',
                 shapeIndex,
                 anchor: world,
                 originals: { [shapeIndex]: shape },
+                movingSeeds: [shapeIndex],
             };
         }
     }
@@ -380,14 +390,32 @@ export const nodeEditorPlugin = mountOf(
             // ELASTIC HOLD (pull past one grid step = break), while the
             // line grab owns the move-as-one translation.
             let grabRef = hit;
+            // A SHAPE grab also carves the selection: grabbing a selected
+            // shape keeps the whole multi-select moving; grabbing an
+            // unselected shape re-skims the selection to its bond group
+            // ("jointed shapes are selected together"). NODE grabs leave
+            // the selection untouched (only the body grab owns moving).
+            let grabbedSelection: number[] | null = null;
             if (grabRef.mode === 'shape') {
                 const bonds = drawing.connections ?? [];
+                // ── MULTI-MOVE SEEDS (the marquee contract) ──
+                const currentSelection = drawing.selection ?? [];
+                const seeds = currentSelection.includes(grabRef.shapeIndex)
+                    ? currentSelection
+                    : [grabRef.shapeIndex];
+                // The moving set is BOND-AWARE: every bonded partner of
+                // every seed joins (the group-move invariant, widened
+                // from the single grabbed shape)
+                const moving = movingSetOf(bonds, seeds);
+                // Snapshot each member from the GRAB-TIME shapes (the
+                // ratchet-proof rebuild source — see GrabRef)
                 const originals: { [shapeIndex: number]: DrawShape } = { ...grabRef.originals };
-                groupOf(bonds, grabRef.shapeIndex).forEach((memberIndex) => {
+                moving.forEach((memberIndex) => {
                     const member = drawing.shapes[memberIndex];
                     if (member) originals[memberIndex] = member;
                 });
-                grabRef = { ...grabRef, originals };
+                grabRef = { ...grabRef, originals, movingSeeds: seeds };
+                grabbedSelection = moving;
             }
             // Claim the gesture: the tool router (registered AFTER this
             // plugin) never sees the press → no drawing drag starts; the
@@ -398,7 +426,14 @@ export const nodeEditorPlugin = mountOf(
             // Record the grab-time node geometry (the release auto-lock's
             // "did it actually move" signature)
             grabSig = shapeSig(drawing.shapes[grabRef.shapeIndex]);
-            context.drawing({ ...drawing, adjusting: true });
+            // One state write: adjusting flag + (for shape grabs) the
+            // selection the markers render immediately (even for a
+            // press-without-drag)
+            context.drawing({
+                ...drawing,
+                adjusting: true,
+                ...(grabbedSelection ? { selection: grabbedSelection } : {}),
+            });
             // 'grabbing' for both gesture kinds — the press committed to a
             // drag either way
             setCursor('grabbing');
@@ -421,6 +456,9 @@ export const nodeEditorPlugin = mountOf(
                 // Stop fighting during drawing drags / pan gestures: the
                 // layer's own cursor (crosshair/grab) applies there
                 if (context.drawing().drawing) return;
+                // A live marquee owns the move stream (crosshair feedback) —
+                // the hover cursor would fight the box drag
+                if (context.drawing().marquee) return;
                 const screen = toScreenPoint(surface, event);
                 const cursor = hoverCursor(
                     context.drawing().shapes,
@@ -447,21 +485,22 @@ export const nodeEditorPlugin = mountOf(
                     setCursor(null);
                     return;
                 }
-                // ── Whole-group move ──
-                // Grabbed shape + every bond-connected shape MOVE AS ONE
-                // UNIT (the contract). dx/dy are the ABSOLUTE grid-snapped
-                // offset of the pointer from the grab anchor (NOT a frame
-                // delta) — every member rebuilds from its GRAB-TIME
-                // snapshot + that absolute offset, so repeated pointermove
-                // events with a constant offset recompute the exact same
-                // geometry (idempotent — no ratchet), and sliding the
-                // pointer back under the anchor restores the originals.
+                // ── Whole-selection move ──
+                // Every member of the moving set (the grabbed shape's bond
+                // group — or EVERY selected shape for a multi-select grab,
+                // jointed partners included) MOVES AS ONE. dx/dy are the
+                // ABSOLUTE grid-snapped offset of the pointer from the grab
+                // anchor (NOT a frame delta) — every member rebuilds from
+                // its GRAB-TIME snapshot + that absolute offset, so repeated
+                // pointermove events with a constant offset recompute the
+                // exact same geometry (idempotent — no ratchet), and sliding
+                // the pointer back under the anchor restores the originals.
                 const dx = snapToGrid({ x: world.x - shapeMode.anchor.x, y: 0 }).x;
                 const dy = snapToGrid({ x: 0, y: world.y - shapeMode.anchor.y }).y;
-                // The group re-resolves from the LIVE bonds each frame
+                // The set re-resolves from the LIVE bonds each frame
                 // (defensive — the built-in gestures never add bonds during
                 // a shape drag, but third-party plugins could)
-                const group = groupOf(bonds, shapeMode.shapeIndex);
+                const group = movingSetOf(bonds, shapeMode.movingSeeds);
                 const nextShapes = shapes.slice();
                 group.forEach((memberIndex) => {
                     const origin = shapeMode.originals[memberIndex];
@@ -639,12 +678,9 @@ export const nodeEditorPlugin = mountOf(
         //   record bonds for geometry that did not actually move.
         // - Only the MOVED shapes participate (the bond group / the
         //   adjusted shape); static shapes never bond each other.
-        const releaseLock = (grabbedIndex: number, groupMove: boolean) => {
+        const releaseLock = (movingIndices: number[]) => {
             const state = context.drawing();
-            const moving = groupMove
-                ? groupOf(state.connections ?? [], grabbedIndex)
-                : [grabbedIndex];
-            const locked = autoLockShapes(state, moving);
+            const locked = autoLockShapes(state, movingIndices);
             // Write only when the lock changed something (the common
             // no-contact release is a pure no-op)
             if (
@@ -681,11 +717,19 @@ export const nodeEditorPlugin = mountOf(
             context.drawing({ ...context.drawing(), adjusting: false });
             // Re-read the LIVE grabbed shape and only lock when the drag
             // actually moved its nodes (a mere click never records bonds)
-            const current = context.drawing().shapes[released.shapeIndex];
+            const live = context.drawing();
+            const current = live.shapes[released.shapeIndex];
             const moved =
                 !!current && (!sig || shapeSig(current) !== sig);
             if (!moved) return;
-            releaseLock(released.shapeIndex, released.mode === 'shape');
+            // The auto-lock's movers: the bond group of the grabbed shape
+            // for a whole-shape (multi-select) drag, the adjusted shape for
+            // a node drag
+            releaseLock(
+                released.mode === 'shape'
+                    ? movingSetOf(live.connections ?? [], released.movingSeeds)
+                    : [released.shapeIndex],
+            );
         };
 
         const handlePointerUp = () => {

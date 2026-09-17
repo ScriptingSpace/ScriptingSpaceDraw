@@ -1,17 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // REMOVABLE feature plugin: DRAG TO PAN — grab-the-paper panning.
 //
-// BUTTON MAP (user contract: "fix up the drag, so it is right mouse click
-// instead of left. Left are for tool usage unless no tool is selected"):
+// BUTTON MAP (updated by the SELECTION contract: "Remove the left click from
+// draggable. Allows it to hold and drag to create a selection box." — the
+// left-drag pan was REMOVED; the selection marquee owns the left drag,
+// cross-reference: selectionPlugin.ts + nodeEditorPlugin.ts):
 // - RIGHT-button drag → pan (the dedicated pan gesture — always pans,
 //   regardless of tool state; the context menu is suppressed on the canvas
 //   so the drag stays clean)
-// - LEFT-button drag → TOOL usage when a tool is active (the tool router
-//   owns it); when NO tool is active, left-drag pans (the "drag anywhere
-//   to look around" default)
-// - Middle-button drag → pan
-// - Space held + any-button drag → pan (power-user override — space+left
-//   pans even with a tool active)
+// - Middle-button drag → pan (regardless of tool state)
+// - LEFT-button drag → NEVER pans anymore; it belongs to the tool (drawing)
+//   when one is armed, to the SELECTION MARQUEE when none is, and to the
+//   node editor when the press lands on a shape. Space + left-drag REMAINS
+//   the power-user pan override (space+any-button pans).
 // - Drag starting inside a `[data-hud]` subtree → belongs to the HUD (the
 //   pointer plugin never records a drag there — cross-reference:
 //   core/pointerPlugin.ts)
@@ -46,16 +47,19 @@ export const dragToPanPlugin = mountOf(
             // editor grabbed the pointer near a shape handle) — pan yields
             // in every mode while it runs
             if (context.drawing().adjusting) return false;
+            // A SELECTION MARQUEE owns a live left-drag — releasing space
+            // (or pressing it) mid-box must never hijack the drag into a
+            // pan (the box would tear away from its anchor)
+            if (context.drawing().marquee) return false;
             // Space held → any button pans (power-user override)
             if (context.keyboard().held.has('Space')) return true;
             // RIGHT button = the dedicated pan drag — always pans
             if (button === 2) return true;
             // MIDDLE button pans
             if (button === 1) return true;
-            // LEFT button: a tool owns it for drawing while active; with no
-            // tool selected left-drag pans (the default look-around)
-            if (button === 0) return context.activeTool() === null;
-            // Any other button never pans
+            // LEFT button never pans (the tool / selection marquee / node
+            // editor own it by state; the space override above already
+            // covered the power-user pan)
             return false;
         };
 

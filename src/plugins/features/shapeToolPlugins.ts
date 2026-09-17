@@ -168,12 +168,14 @@ const commitDraft = (
         drawing: boolean;
         draft: DrawShape | null;
         connections: DrawBond[];
+        selection: number[];
     };
     const shape = build();
     // Stamp the CREATION-TIME ink from the draft onto the built shape
     const stamped =
         shape && state.draft?.color ? ({ ...shape, color: state.draft.color } as DrawShape) : shape;
     if (!stamped) {
+        // Nothing committed (zero-size drag) → the selection stays as-is
         context.drawing({ ...state, draft: null } as never);
         return;
     }
@@ -188,6 +190,9 @@ const commitDraft = (
         shapes: result.shapes,
         connections: result.connections,
         draft: null,
+        // A fresh commit dismisses the selection (standard drawing-tool
+        // behavior — the old selection described the pre-commit world)
+        selection: [],
     } as never);
 };
 

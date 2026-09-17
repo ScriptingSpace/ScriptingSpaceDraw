@@ -305,17 +305,28 @@ describe('DrawDashboard — panning', () => {
         expect(readOriginCross()).toEqual({ x: 350, y: 360 });
     });
 
-    it('pans with plain left-drag on empty canvas (drag anywhere to look)', () => {
+    it('rubber-band SELECTIONS with plain left-drag (the drag never pans)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
 
-        // No space held, button 0 (left) — the default look-around gesture
+        // No space held, button 0 (left) — the default gesture is now the
+        // selection marquee (the left-drag PAN was removed; right/middle/
+        // space drags keep panning)
         fireEvent.pointerDown(surface, { clientX: 300, clientY: 200, button: 0 });
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 250 });
+        // The live dashed selection box tracks the drag (screen-space of the
+        // world box: start (−100,−100), current (0,−50) at pan (−400,−300))
+        const box = screen.getByTestId('marquee-box');
+        expect(box.getAttribute('x')).toBe('300');
+        expect(box.getAttribute('y')).toBe('200');
+        expect(box.getAttribute('width')).toBe('100');
+        expect(box.getAttribute('height')).toBe('50');
         fireEvent.pointerUp(surface, {});
-
-        // Paper follows the hand → origin moves +100/+50: (400,300) → (500, 350)
-        expect(readOriginCross()).toEqual({ x: 500, y: 350 });
+        // Release over empty space (no shapes exist) → the box unmounts,
+        // nothing selected — and the view NEVER panned: origin stays centered
+        expect(screen.queryByTestId('marquee-box')).toBeNull();
+        expect(screen.queryByTestId('selection-overlay')).toBeNull();
+        expect(readOriginCross()).toEqual({ x: 400, y: 300 });
         // Scale unchanged
         expect(readHudScale()).toBe('×1.000e+0');
     });
@@ -407,9 +418,14 @@ describe('DrawDashboard — panning', () => {
             fireEvent.wheel(surfaceIn, { clientX: 400, clientY: 300, deltaY: 100 });
         }
         expect(readHudScale()).toBe('×1.728e+0');
+        // Zoomed-in pan probe: space+left drag (the pan override — a plain
+        // left drag is the selection marquee now). Drag 100px right → the
+        // origin cross follows the hand to exactly 500.
+        fireEvent.keyDown(window, { code: 'Space' });
         fireEvent.pointerDown(surfaceIn, { clientX: 300, clientY: 300, button: 0 });
         fireEvent.pointerMove(surfaceIn, { clientX: 400, clientY: 300 });
         fireEvent.pointerUp(surfaceIn, {});
+        fireEvent.keyUp(window, { code: 'Space' });
         expect(readOriginCross().x).toBeCloseTo(500, 9);
         zoomedIn.unmount();
 
@@ -422,9 +438,12 @@ describe('DrawDashboard — panning', () => {
             fireEvent.wheel(surfaceOut, { clientX: 400, clientY: 300, deltaY: -100 });
         }
         expect(readHudScale()).toBe('×5.787e-1');
+        // SAME zoomed-out probe with the space override
+        fireEvent.keyDown(window, { code: 'Space' });
         fireEvent.pointerDown(surfaceOut, { clientX: 300, clientY: 300, button: 0 });
         fireEvent.pointerMove(surfaceOut, { clientX: 400, clientY: 300 });
         fireEvent.pointerUp(surfaceOut, {});
+        fireEvent.keyUp(window, { code: 'Space' });
         expect(readOriginCross().x).toBeCloseTo(500, 9);
     });
 
@@ -447,8 +466,9 @@ describe('DrawDashboard — panning', () => {
         const released = screenToCanvas({ x: 400, y: 300 }, after);
         expect(released).toEqual(grabbed);
 
-        // The dashboard actually performed this drag
-        fireEvent.pointerDown(surface, { clientX: 300, clientY: 300, button: 0 });
+        // The dashboard actually performed this drag (RIGHT-button — the
+        // dedicated pan drag; a plain left drag is the selection marquee now)
+        fireEvent.pointerDown(surface, { clientX: 300, clientY: 300, button: 2 });
         fireEvent.pointerMove(surface, { clientX: 400, clientY: 300 });
         fireEvent.pointerUp(surface, {});
         expect(readOriginCross().x).toBeCloseTo(500, 9);
