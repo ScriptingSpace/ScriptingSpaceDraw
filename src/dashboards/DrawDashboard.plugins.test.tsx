@@ -19,7 +19,7 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Plugin-architecture tests for the DrawDashboard host.
 //
-// The behavior suite (the 32 interaction tests in DrawDashboard.test.tsx)
+// The behavior suite (the 33 interaction tests in DrawDashboard.test.tsx)
 // already proves the DEFAULT plugin set works end-to-end. THIS suite proves
 // the ARCHITECTURE contracts:
 // 1. Core plugins (pointer/wheel/keyboard/resize/transform) are registered

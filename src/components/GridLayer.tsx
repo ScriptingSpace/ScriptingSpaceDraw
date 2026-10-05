@@ -34,8 +34,8 @@ import type { CanvasTransform } from '../functions/canvasTransform';
 // ─────────────────────────────────────────────────────────────────────────────
 
 // The full grid surface. Props mirror the canvas viewport: the current
-// transform and the pixel size of the canvas area. Consumed ONLY by
-// DrawDashboard (see ../dashboards/DrawDashboard.tsx).
+// transform and the pixel size of the canvas area. Consumed ONLY by the
+// grid feature plugin (see ../plugins/features/gridPlugin.tsx).
 export const GridLayer = ({
     transform,
     width,

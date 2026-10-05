@@ -20,8 +20,9 @@
 // - pointerup (drawing ends)                   → tool.onDragEnd(lastCursor)
 //
 // The router owns the `drawing` flag in the drawing state: it flips it on
-// at drag start and off at drag end. The dragToPanPlugin reads the ACTIVE
-// TOOL (not this flag) to yield left-drag to the tool.
+// at drag start and off at drag end. The dragToPanPlugin never reads this
+// flag — it yields the LEFT button outright (right/middle pan, and space
+// pans with any button).
 //
 // TOOL SHORTCUTS: tools can declare a keyboard `shortcut` (event.code). The
 // router listens for keydown on window and activates the matching tool —

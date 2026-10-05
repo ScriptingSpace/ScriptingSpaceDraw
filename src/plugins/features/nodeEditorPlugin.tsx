@@ -372,7 +372,7 @@ export const nodeEditorPlugin = mountOf(
             // ── TOOL PRECEDENCE (draw-from-node) ──
             // With a tool armed, a press on a NODE yields to the tool: a
             // new shape wants that node's grid point as its anchor, and
-            // the commit drop check (autoConnect) then welds the junction.
+            // the commit drop check (autoLock) then welds the junction.
             // Without this the editor steals every node press and the
             // user could never DRAW onto a node — the auto lock looked
             // "flaky" (locks formed only when the press missed nodes).

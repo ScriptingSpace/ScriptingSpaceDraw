@@ -4,8 +4,8 @@ import { defineConfig } from 'vite';
 
 // Read the package version at config time (raw fs read instead of a JSON
 // import so tsconfig does not need resolveJsonModule for the config file).
-// It is injected into the app bundle via `define` below so the dashboard
-// footer can display it on the GitHub Pages deploy without bundling the
+// It is injected into the app bundle via `define` below so the floating
+// title can display it on the GitHub Pages deploy without bundling the
 // whole package.json into the client.
 const pkg = JSON.parse(
     readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),

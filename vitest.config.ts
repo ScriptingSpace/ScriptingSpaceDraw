@@ -2,11 +2,11 @@ import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vitest/config';
 
 // Matches the vitest setup used by every sibling distribution package
-// (template, comfy-dashboard, maths, english, ScribbleScribble):
+// (template, comfy-dashboard, maths, english, ScriptingSpaceScribble):
 // jsdom + globals + src glob.
 
 // Same define as vite.config.ts: vitest.config.ts takes precedence over
-// vite.config.ts, so without this the __APP_VERSION__ constant (footer
+// vite.config.ts, so without this the __APP_VERSION__ constant (title
 // version display) would be undefined inside tests.
 const pkg = JSON.parse(
     readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),

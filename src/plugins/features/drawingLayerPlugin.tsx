@@ -63,9 +63,9 @@ const ShapeElement = ({
     };
     switch (shape.kind) {
         case 'curve':
-            // Quadratic Bézier path — `control` bends the segment ("line
-            // more like curve": grid chords across multiple grid points
-            // bow instead of running sharp through them)
+            // Quadratic Bézier path — `control` bends the segment when the
+            // user drags it off the chord ("line more like curve": the Line
+            // tool commits the straight shortest path; curving is opt-in)
             return (
                 <path
                     d={`M ${shape.start.x} ${shape.start.y} Q ${shape.control.x} ${shape.control.y} ${shape.end.x} ${shape.end.y}`}

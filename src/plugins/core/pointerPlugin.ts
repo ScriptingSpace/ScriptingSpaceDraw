@@ -8,7 +8,6 @@
 // normalizes the raw events into the context's pointer state:
 //   - `cursor`: viewport-relative point on every move (null on leave)
 //   - `dragLast` + `dragButton`: set on press, cleared on release/leave
-//   - `pressed`: which button is currently down
 //
 // COORDINATE MATH: all events are converted to viewport-relative pixels via
 // the surface's getBoundingClientRect (jsdom reports clientX/Y relative to
