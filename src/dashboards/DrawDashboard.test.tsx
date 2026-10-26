@@ -232,6 +232,9 @@ describe('DrawDashboard — wheel zoom', () => {
         expect(readHudScale()).toBe('×8.333e-1');
     });
 
+    // The two 400-notch loops below each drive 400 React re-renders; under a
+    // parallel turbo run a loop regularly exceeds vitest's default 5s
+    // testTimeout, so both carry their own generous ceiling.
     it('reaches unbounded magnification over repeated notches (no zoom ceiling)', () => {
         render(<DrawDashboard />);
         const surface = stubSurfaceRect();
@@ -242,7 +245,7 @@ describe('DrawDashboard — wheel zoom', () => {
             fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: 100 });
         }
         expect(readHudScale()).toBe('×4.704e+31');
-    });
+    }, 30_000);
 
     it('reaches unbounded minification over repeated notches (no zoom floor)', () => {
         render(<DrawDashboard />);
@@ -253,7 +256,7 @@ describe('DrawDashboard — wheel zoom', () => {
             fireEvent.wheel(surface, { clientX: 400, clientY: 300, deltaY: -100 });
         }
         expect(readHudScale()).toBe('×2.126e-32');
-    });
+    }, 30_000);
 
     it('fades the grid out gracefully at extreme zoom-out (spacing < 2px)', () => {
         render(<DrawDashboard />);
