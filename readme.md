@@ -31,7 +31,33 @@ The package is publishable to npm as `@scripting-space/draw`:
 yarn publish
 ```
 
-(`prepublishOnly` runs the test suite + typecheck + lib build first.)
+(`prepublishOnly` runs `vitest run` → `tsc --noEmit` → `vite build`; the build
+emits only the sanctioned `dist/` app bundle — no library build: the published
+library **is** the TypeScript source.)
+
+## Consuming the library
+
+```bash
+yarn add @scripting-space/draw
+```
+
+```tsx
+import { DrawDashboard } from '@scripting-space/draw';
+```
+
+- **Public API = `src/index.ts`** — `main` / `module` / `types` and the `.`
+  `exports` condition all name that `.ts` barrel, and `files` ships the `src/`
+  tree (tests, the app entry `src/main.tsx` and its `src/app.css` excluded), so
+  npm installs the sources themselves — no `lib/`, no `.mjs`/`.cjs`, no
+  emitted `.d.ts`.
+- Consumers compile those sources with their own bundler (Vite / webpack /
+  esbuild). TypeScript consumers must use `moduleResolution: "bundler"`: the
+  relative imports inside `src/` are extensionless, which `node16` / `nodenext`
+  rejects per specifier (TS2834).
+- `react` / `react-dom` are `peerDependencies`; `sideEffects: false` + the
+  barrel keep the import tree-shakeable.
+- `dist/` is the deployable GitHub Pages app build (sanctioned output), shipped
+  alongside for reference — nothing in the library entry reads it.
 
 ## Development
 
@@ -40,8 +66,7 @@ yarn install
 yarn dev        # vite dev server
 yarn test       # vitest run (jsdom)
 yarn typecheck  # tsc --noEmit
-yarn build      # vite build → dist/
-yarn build:lib  # tsc library build → lib/
+yarn build      # vite build → dist/ (deployable Pages app only)
 ```
 
 ## Architecture

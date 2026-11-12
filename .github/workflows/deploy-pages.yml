@@ -55,10 +55,10 @@ jobs:
             - name: Build
               run: yarn build
 
-            # Also compile the npm library build (lib/) so the publishable
-            # output (everything exported from src/index.ts) is verified in CI
-            - name: Build library
-              run: yarn build:lib
+            # No library build step: this package publishes TypeScript source
+            # (main/module/types/exports → src/index.ts), so everything consumers
+            # import is already compiled by `yarn test` + `yarn typecheck` above.
+            # `yarn build` emits only the deployable GitHub Pages app in dist/.
 
             - name: Configure Pages
               uses: actions/configure-pages@v5

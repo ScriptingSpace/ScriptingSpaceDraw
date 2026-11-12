@@ -11,8 +11,16 @@
         "esModuleInterop": true,
         "strict": true,
         "lib": ["decorators", "dom", "es5", "scripthost", "es2015.collection"],
-        "types": ["node", "vitest/globals"],
-        "outDir": "./lib"
+        "types": ["node", "vitest/globals"]
     },
+    // jsonc is fine here: tsc, Vite and Vitest all parse tsconfig with comments.
+    // Source-only publishing (root AGENTS.md rule (c)): the published surface is
+    // the .ts sources named by main/module/types/exports, so the only tsc
+    // invocation left in this package is `tsc --noEmit` ("typecheck" +
+    // "prepublishOnly"). "outDir" was removed together with the retired
+    // tsconfig.build.json that used to emit lib/ (JS + .d.ts); keeping it would
+    // imply a build output nothing consumes. "exclude" below still lists
+    // **/lib/* so a stray `tsc` run can never pull emitted files back into the
+    // program. "strict" is untouched.
     "exclude": ["node_modules", "**/*.test.ts", "**/dist/*", "**/lib/*"]
 }
